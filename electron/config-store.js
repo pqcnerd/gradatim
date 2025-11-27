@@ -15,6 +15,12 @@ const DEFAULT_SETTINGS = {
     apiKey: '',
     model: 'gemini-2.5-flash',
   },
+  ui: {
+    sidebarVisible: true,
+    activityVisible: true,
+    minimapEnabled: true,
+    zoomLevel: 0,
+  },
 };
 
 const deepMerge = (target, source) => {

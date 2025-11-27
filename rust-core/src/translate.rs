@@ -18,6 +18,70 @@ struct ArithmeticInstruction {
 
 use crate::models::TranslateLineRequest;
 
+const DECLARE_KEYWORDS: &[&str] = &[
+    "declare",
+    "define",
+    "create",
+    "make",
+    "set up",
+    "setup",
+    "make sure",
+    "initialize",
+    "init",
+    "turn",
+    "convert",
+    "build",
+    "form",
+];
+
+const LOOP_KEYWORDS: &[&str] = &[
+    "loop",
+    "for loop",
+    "for each",
+    "foreach",
+    "for every",
+    "for all",
+    "iterate",
+    "iterate over",
+    "iterate through",
+    "loop over",
+    "loop through",
+    "go through",
+    "go over",
+    "cycle through",
+    "traverse",
+    "walk through",
+];
+
+const IF_KEYWORDS: &[&str] = &[
+    "if",
+    "when",
+    "whenever",
+    "in case",
+    "provided that",
+    "assuming",
+    "in the event",
+    "should",
+];
+
+const ELSE_IF_KEYWORDS: &[&str] = &["else if", "otherwise if", "elsewhen", "else when"];
+
+const LIST_STARTERS: &[&str] = &["list", "array", "vector", "arr", "collection"];
+
+const ADD_KEYWORDS: &[&str] = &["add", "sum", "total", "combine", "plus", "tally", "sum up"];
+const SUBTRACT_KEYWORDS: &[&str] = &[
+    "subtract",
+    "minus",
+    "difference",
+    "difference between",
+    "difference of",
+    "remove",
+    "take away",
+    "decrease",
+];
+const MULTIPLY_KEYWORDS: &[&str] = &["multiply", "product", "product of", "times"];
+const DIVIDE_KEYWORDS: &[&str] = &["divide", "quotient", "quotient of", "split", "divide by"];
+
 pub fn translate_line(request: &TranslateLineRequest) -> Result<String> {
     match request.language.to_lowercase().as_str() {
         "python" => translate_python(request),
@@ -32,7 +96,7 @@ fn translate_c(request: &TranslateLineRequest) -> Result<String> {
         return Err(anyhow!("Line is empty"));
     }
 
-    if let Some(rest) = strip_keyword(line, "declare") {
+    if let Some(rest) = strip_declare_keyword(line) {
         return handle_declare(rest);
     }
 
@@ -64,7 +128,7 @@ fn translate_c(request: &TranslateLineRequest) -> Result<String> {
         return Ok(format!("return {};", rest.trim()));
     }
 
-    if let Some(rest) = strip_keyword(line, "if") {
+    if let Some(rest) = strip_if_keyword(line) {
         return handle_if(rest);
     }
 
@@ -86,12 +150,15 @@ fn translate_c(request: &TranslateLineRequest) -> Result<String> {
         return handle_function_skeleton(rest);
     }
 
-    if line.trim().eq_ignore_ascii_case("else") {
+    if {
+        let trimmed = line.trim();
+        trimmed.eq_ignore_ascii_case("else") || trimmed.eq_ignore_ascii_case("otherwise")
+    } {
         return Ok("else {\n    \n}".to_string());
     }
 
-    if line.to_lowercase().starts_with("else if ") {
-        let condition = line[8..].trim();
+    if let Some(rest) = strip_else_if_keyword(line) {
+        let condition = rest.trim();
         let c_expr = normalize_condition(condition);
         return Ok(format!("else if ({c_expr}) {{\n    \n}}"));
     }
@@ -100,10 +167,7 @@ fn translate_c(request: &TranslateLineRequest) -> Result<String> {
         return Ok("}".to_string());
     }
 
-    if let Some(rest) = strip_keyword(line, "loop")
-        .or_else(|| strip_keyword(line, "for loop"))
-        .or_else(|| strip_keyword(line, "for"))
-    {
+    if let Some(rest) = strip_loop_keyword(line) {
         return handle_loop(rest);
     }
 
@@ -195,7 +259,7 @@ fn handle_declare(remainder: &str) -> Result<String> {
     }
 
     if list_kind {
-        let size_expr = value.unwrap_or("10");
+        let size_expr = value.as_deref().unwrap_or("10");
         let decls: Vec<String> = names
             .into_iter()
             .map(|name| {
@@ -212,7 +276,7 @@ fn handle_declare(remainder: &str) -> Result<String> {
     let declarations: Vec<String> = names
         .into_iter()
         .map(|name| {
-            if let Some(value) = value {
+            if let Some(value) = value.as_deref() {
                 format!("{} = {}", sanitize_identifier(name), value)
             } else {
                 sanitize_identifier(name).to_string()
@@ -281,22 +345,23 @@ fn handle_loop(remainder: &str) -> Result<String> {
         return handle_collection_loop_c(remainder);
     }
 
-    let (label_section, after_from_section) = if let Some(pos) = lower.find("from") {
-        (
-            remainder[..pos].trim().to_string(),
-            remainder[pos + 4..].trim_start(),
-        )
-    } else {
-        ("i".to_string(), remainder)
-    };
+    let (iterator, range_section) = extract_iterator_and_range(remainder);
+    let iter_name = iterator.as_str();
+    let mut range_segment = range_section.trim();
+    if range_segment.is_empty() {
+        return Err(anyhow!("Loop bounds are missing"));
+    }
+    if range_segment.to_lowercase().starts_with("from ") {
+        range_segment = range_segment[4..].trim_start();
+    }
 
-    let lower_after_from = after_from_section.to_lowercase();
-    let to_rel = lower_after_from.find("to").ok_or_else(|| {
+    let lower_range = range_segment.to_lowercase();
+    let to_rel = lower_range.find("to").ok_or_else(|| {
         anyhow!("Loop sentences should include `to <end>` after the starting expression")
     })?;
 
-    let start = after_from_section[..to_rel].trim();
-    let tail = after_from_section[to_rel + 2..].trim();
+    let start = range_segment[..to_rel].trim();
+    let tail = range_segment[to_rel + 2..].trim();
     if start.is_empty() || tail.is_empty() {
         return Err(anyhow!("Loop bounds are incomplete"));
     }
@@ -306,24 +371,15 @@ fn handle_loop(remainder: &str) -> Result<String> {
         return Err(anyhow!("Loop end expression is missing"));
     }
 
-    let iterator = {
-        let sanitized = sanitize_identifier(&label_section);
-        if sanitized.is_empty() {
-            "i".to_string()
-        } else {
-            sanitized
-        }
-    };
-
     let start_expr = extract_range_value(start);
     let mut lines = Vec::with_capacity(3);
     lines.push(format!(
         "for (int {iter} = {start}; {iter} < {end}; {iter}++) {{",
-        iter = iterator,
+        iter = iter_name,
         start = start_expr,
         end = end_expr
     ));
-    lines.push(build_c_body_line(action.as_deref(), Some(&iterator)));
+    lines.push(build_c_body_line(action.as_deref(), Some(iter_name)));
     lines.push("}".to_string());
 
     Ok(lines.join("\n"))
@@ -343,7 +399,7 @@ fn handle_py_declare(remainder: &str) -> Result<String> {
     }
 
     if list_kind {
-        let size_expr = value.unwrap_or("10");
+        let size_expr = value.as_deref().unwrap_or("10");
         let decls: Vec<String> = names
             .into_iter()
             .map(|name| format!("{name} = [0] * {size}", size = size_expr))
@@ -351,7 +407,7 @@ fn handle_py_declare(remainder: &str) -> Result<String> {
         return Ok(decls.join("\n"));
     }
 
-    let rhs = value.unwrap_or("None");
+    let rhs = value.as_deref().unwrap_or("None");
 
     if names.len() == 1 {
         Ok(format!("{} = {}", names[0], rhs))
@@ -382,22 +438,23 @@ fn handle_py_loop(remainder: &str) -> Result<String> {
         return handle_python_collection_loop(remainder);
     }
 
-    let (label_section, after_from_section) = if let Some(pos) = lower.find("from") {
-        (
-            remainder[..pos].trim().to_string(),
-            remainder[pos + 4..].trim_start(),
-        )
-    } else {
-        ("i".to_string(), remainder)
-    };
+    let (iterator, range_section) = extract_iterator_and_range(remainder);
+    let iter_name = iterator.as_str();
+    let mut range_segment = range_section.trim();
+    if range_segment.is_empty() {
+        return Err(anyhow!("Loop bounds are missing"));
+    }
+    if range_segment.to_lowercase().starts_with("from ") {
+        range_segment = range_segment[4..].trim_start();
+    }
 
-    let lower_after_from = after_from_section.to_lowercase();
-    let to_rel = lower_after_from.find("to").ok_or_else(|| {
+    let lower_range = range_segment.to_lowercase();
+    let to_rel = lower_range.find("to").ok_or_else(|| {
         anyhow!("Loop sentences should include `to <end>` after the starting expression")
     })?;
 
-    let start_raw = after_from_section[..to_rel].trim();
-    let tail = after_from_section[to_rel + 2..].trim();
+    let start_raw = range_segment[..to_rel].trim();
+    let tail = range_segment[to_rel + 2..].trim();
     if start_raw.is_empty() || tail.is_empty() {
         return Err(anyhow!("Loop bounds are incomplete"));
     }
@@ -407,39 +464,82 @@ fn handle_py_loop(remainder: &str) -> Result<String> {
         return Err(anyhow!("Loop end expression is missing"));
     }
 
-    let iterator = {
-        let sanitized = sanitize_identifier(&label_section);
-        if sanitized.is_empty() {
-            "i".to_string()
-        } else {
-            sanitized
-        }
-    };
-
     let start_expr = extract_range_value(start_raw);
     let mut lines = Vec::new();
     lines.push(format!(
         "for {iter} in range({start}, {end}):",
-        iter = iterator,
+        iter = iter_name,
         start = start_expr,
         end = end_expr
     ));
-    lines.push(build_python_body_line(action.as_deref(), Some(&iterator)));
+    lines.push(build_python_body_line(action.as_deref(), Some(iter_name)));
 
     Ok(lines.join("\n"))
 }
 
-fn split_value(input: &str) -> (&str, Option<&str>) {
-    if let Some(idx) = input.rfind(char::is_whitespace) {
-        let (head, tail) = input.split_at(idx);
-        let value = tail.trim();
-
-        if looks_like_value(value) {
-            return (head.trim_end(), Some(value));
-        }
+fn split_value(input: &str) -> (String, Option<String>) {
+    let mut tokens: Vec<&str> = input
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| c == ',' || c == ';'))
+        .collect();
+    if tokens.is_empty() {
+        return (String::new(), None);
     }
 
-    (input, None)
+    let mut value: Option<String> = None;
+    let mut idx = tokens.len();
+    while idx > 0 {
+        let token = tokens[idx - 1];
+        if looks_like_value(token) {
+            value = Some(token.to_string());
+            tokens.truncate(idx - 1);
+            remove_trailing_size_keywords(&mut tokens);
+            break;
+        }
+
+        let lower = token.to_lowercase();
+        if matches!(
+            lower.as_str(),
+            "ints" | "integers" | "numbers" | "values" | "elements" | "items"
+        ) && idx >= 2
+        {
+            let candidate = tokens[idx - 2];
+            if looks_like_value(candidate) {
+                value = Some(candidate.to_string());
+                tokens.truncate(idx - 2);
+                remove_trailing_size_keywords(&mut tokens);
+                break;
+            }
+        }
+        idx -= 1;
+    }
+
+    (tokens.join(" "), value)
+}
+
+fn remove_trailing_size_keywords(tokens: &mut Vec<&str>) {
+    while let Some(last) = tokens.last() {
+        let lower = last.to_lowercase();
+        if matches!(
+            lower.as_str(),
+            "of"
+                | "size"
+                | "sized"
+                | "length"
+                | "slots"
+                | "elements"
+                | "values"
+                | "items"
+                | "ints"
+                | "integers"
+                | "numbers"
+                | "count"
+        ) {
+            tokens.pop();
+        } else {
+            break;
+        }
+    }
 }
 
 fn looks_like_value(segment: &str) -> bool {
@@ -463,6 +563,40 @@ fn strip_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+fn strip_any_keyword<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str> {
+    for keyword in keywords {
+        if let Some(rest) = strip_keyword(line, keyword) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+fn strip_declare_keyword(line: &str) -> Option<&str> {
+    let rest = strip_any_keyword(line, DECLARE_KEYWORDS)?;
+    let next = rest.trim_start().to_lowercase();
+    if next.starts_with("function")
+        || next.starts_with("main")
+        || next.starts_with("entry")
+        || next.starts_with("program")
+    {
+        return None;
+    }
+    Some(rest)
+}
+
+fn strip_loop_keyword(line: &str) -> Option<&str> {
+    strip_any_keyword(line, LOOP_KEYWORDS)
+}
+
+fn strip_if_keyword(line: &str) -> Option<&str> {
+    strip_any_keyword(line, IF_KEYWORDS)
+}
+
+fn strip_else_if_keyword(line: &str) -> Option<&str> {
+    strip_any_keyword(line, ELSE_IF_KEYWORDS)
 }
 
 fn sanitize_identifier(input: &str) -> String {
@@ -518,19 +652,19 @@ fn parse_arithmetic_instruction(line: &str) -> Option<ArithmeticInstruction> {
         return None;
     }
 
-    if let Some(rest) = strip_keyword(trimmed, "add") {
+    if let Some(rest) = strip_any_keyword(trimmed, ADD_KEYWORDS) {
         return parse_add_mul(rest, ArithmeticOp::Add, true);
     }
 
-    if let Some(rest) = strip_keyword(trimmed, "multiply") {
+    if let Some(rest) = strip_any_keyword(trimmed, MULTIPLY_KEYWORDS) {
         return parse_add_mul(rest, ArithmeticOp::Multiply, true);
     }
 
-    if let Some(rest) = strip_keyword(trimmed, "divide") {
+    if let Some(rest) = strip_any_keyword(trimmed, DIVIDE_KEYWORDS) {
         return parse_divide(rest);
     }
 
-    if let Some(rest) = strip_keyword(trimmed, "subtract") {
+    if let Some(rest) = strip_any_keyword(trimmed, SUBTRACT_KEYWORDS) {
         return parse_subtract(rest);
     }
 
@@ -885,6 +1019,60 @@ fn handle_python_collection_loop(text: &str) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+fn extract_iterator_and_range<'a>(input: &'a str) -> (String, &'a str) {
+    let trimmed = input.trim_start();
+    if trimmed.is_empty() {
+        return ("i".to_string(), trimmed);
+    }
+
+    let lower = trimmed.to_lowercase();
+    if lower.starts_with("from ") {
+        return ("i".to_string(), trimmed[4..].trim_start());
+    }
+
+    let (first_token, tail) = split_first_token(trimmed);
+    if first_token.is_empty() {
+        return ("i".to_string(), trimmed);
+    }
+
+    let first_char_is_alpha = first_token
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_')
+        .unwrap_or(false);
+    let candidate = sanitize_identifier(first_token);
+    if !first_char_is_alpha || candidate.is_empty() {
+        return ("i".to_string(), trimmed);
+    }
+
+    let tail_trim = tail.trim_start();
+    if tail_trim.to_lowercase().starts_with("from ") {
+        return (candidate, tail_trim[4..].trim_start());
+    }
+    if tail_trim.starts_with(":=") {
+        return (candidate, tail_trim[2..].trim_start());
+    }
+    if tail_trim.starts_with('=') {
+        return (candidate, tail_trim[1..].trim_start());
+    }
+    for prefix in ["equals", "equal to", "starts at", "starting at", "begin at", "begins at"] {
+        let lower_tail = tail_trim.to_lowercase();
+        if lower_tail.starts_with(prefix) {
+            let offset = prefix.len();
+            return (
+                candidate,
+                tail_trim[offset..].trim_start_matches(|c: char| c == ' '),
+            );
+        }
+    }
+    let first_tail_char = tail_trim.chars().next().unwrap_or(' ');
+    if first_tail_char.is_ascii_digit() || matches!(first_tail_char, '-' | '+') {
+        return (candidate, tail_trim);
+    }
+
+    ("i".to_string(), trimmed)
+}
+
 fn extract_collection_identifier(fragment: &str) -> (String, &str) {
     let mut remainder = fragment.trim_start();
     loop {
@@ -920,11 +1108,20 @@ fn split_first_token(input: &str) -> (&str, &str) {
 }
 
 fn starts_with_list_keyword(line: &str) -> bool {
-    let trimmed = line.trim_start().to_lowercase();
-    trimmed.starts_with("list ")
-        || trimmed.starts_with("array ")
-        || trimmed.starts_with("vector ")
-        || trimmed.starts_with("arr ")
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    for keyword in LIST_STARTERS {
+        if lower.starts_with(keyword) {
+            let boundary = keyword.len();
+            if lower.len() == boundary || lower.as_bytes().get(boundary).map(|b| *b == b' ').unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn handle_struct_definition(rest: &str) -> Result<String> {
@@ -1134,15 +1331,23 @@ fn normalize_declare_input(input: &str) -> (String, bool) {
     let mut is_list = false;
     let mut filtered = Vec::new();
     for token in input.split_whitespace() {
-        let lower = token.to_lowercase();
-        if matches!(lower.as_str(), "list" | "array" | "vector" | "arr") {
+        let clean = token.trim_matches(|c: char| c == ',' || c == ';');
+        let lower = clean.to_lowercase();
+        if matches!(
+            lower.as_str(),
+            "list" | "array" | "vector" | "arr" | "collection" | "table"
+        ) {
             is_list = true;
             continue;
         }
-        if matches!(lower.as_str(), "of" | "a" | "an" | "with") {
+        if matches!(
+            lower.as_str(),
+            "of" | "a" | "an" | "with" | "the" | "this" | "that" | "be" | "is" | "are" | "into"
+                | "in" | "as" | "named" | "called" | "should" | "to"
+        ) {
             continue;
         }
-        filtered.push(token);
+        filtered.push(clean);
     }
     (filtered.join(" "), is_list)
 }

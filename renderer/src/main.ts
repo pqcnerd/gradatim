@@ -17,7 +17,9 @@ const tabList = document.getElementById('tab-list') as HTMLDivElement | null;
 const tabAddButton = document.getElementById('tab-add') as HTMLButtonElement | null;
 const workspaceLabel = document.getElementById('workspace-label');
 const sidebarRefreshButton = document.getElementById('sidebar-refresh');
-const tabMenuButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.menu-link'));
+const sidebarElement = document.querySelector('.sidebar') as HTMLElement | null;
+const workspaceContainer = document.querySelector('.workspace') as HTMLElement | null;
+const statusPanelElement = document.querySelector('.status-panel') as HTMLElement | null;
 
 if (!editorContainer || !statusList || !toast || !fileTreeContainer || !tabList) {
   throw new Error('Renderer root elements are missing. Check index.html structure.');
@@ -35,7 +37,8 @@ const welcomeSnippet = [
 type EditorTab = {
   id: string;
   title: string;
-  path?: string;
+  path?: string | null;
+  absolutePath?: string;
   model: monaco.editor.ITextModel;
   dirty: boolean;
   language: string;
@@ -44,6 +47,13 @@ type EditorTab = {
 const tabs: EditorTab[] = [];
 let activeTabId: string | null = null;
 let untitledCounter = 1;
+let workspaceRootPath: string | null = null;
+let workspaceRootName: string | null = null;
+let disposeMenuListener: (() => void) | undefined;
+let sidebarVisible = true;
+let activityVisible = true;
+let minimapEnabled = true;
+let zoomLevel = 0;
 
 const editor = monaco.editor.create(editorContainer, {
   language: 'c',
@@ -94,7 +104,208 @@ const generateTabId = () =>
     ? crypto.randomUUID()
     : `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+const basename = (input?: string | null) => {
+  if (!input) {
+    return '';
+  }
+  const normalized = input.replace(/\\/g, '/');
+  const segments = normalized.split('/');
+  const last = segments[segments.length - 1];
+  return last || normalized;
+};
+
+const updateWorkspaceInfo = (info: { rootPath?: string | null; rootName?: string | null }) => {
+  if (info.rootPath) {
+    workspaceRootPath = info.rootPath;
+  }
+  if (info.rootName) {
+    workspaceRootName = info.rootName;
+    if (workspaceLabel) {
+      workspaceLabel.textContent = info.rootName;
+    }
+  }
+};
+
+const applyWorkspaceSnapshot = (payload: { rootPath?: string | null; rootName?: string | null; snapshot?: DirectoryNode | null }) => {
+  updateWorkspaceInfo({ rootPath: payload.rootPath ?? workspaceRootPath, rootName: payload.rootName ?? workspaceRootName });
+  if (payload.snapshot) {
+    renderFileTree(payload.snapshot);
+  } else if (!payload.snapshot && fileTreeContainer) {
+    fileTreeContainer.innerHTML = '<p class="tree-placeholder">No files detected in this workspace.</p>';
+  }
+};
+
+const findTabByPath = (absolutePath?: string | null, relativePath?: string | null) => {
+  if (!absolutePath && !relativePath) {
+    return undefined;
+  }
+  return tabs.find(tab => {
+    if (absolutePath && tab.absolutePath === absolutePath) {
+      return true;
+    }
+    if (relativePath && tab.path === relativePath) {
+      return true;
+    }
+    return false;
+  });
+};
+
+const clampZoomLevel = (value: number) => Math.max(-3, Math.min(3, value));
+
+const persistUiPreferences = () => {
+  if (!window.electronAPI?.saveSettings) {
+    return;
+  }
+  window.electronAPI
+    .saveSettings({
+      ui: {
+        sidebarVisible,
+        activityVisible,
+        minimapEnabled,
+        zoomLevel
+      }
+    })
+    .catch(() => {});
+};
+
+const applySidebarVisibility = (visible: boolean, persist = false) => {
+  sidebarVisible = visible;
+  sidebarElement?.classList.toggle('is-hidden', !visible);
+  workspaceContainer?.classList.toggle('sidebar-hidden', !visible);
+  if (persist) {
+    persistUiPreferences();
+  }
+};
+
+const applyActivityVisibility = (visible: boolean, persist = false) => {
+  activityVisible = visible;
+  statusPanelElement?.classList.toggle('is-hidden', !visible);
+  workspaceContainer?.classList.toggle('activity-hidden', !visible);
+  if (persist) {
+    persistUiPreferences();
+  }
+};
+
+const applyMinimapPreference = (enabled: boolean, persist = false) => {
+  minimapEnabled = enabled;
+  editor.updateOptions({
+    minimap: { enabled, renderCharacters: false, showSlider: 'always' }
+  });
+  if (persist) {
+    persistUiPreferences();
+  }
+};
+
+const applyZoomLevel = async (value: number, persist = false) => {
+  zoomLevel = clampZoomLevel(value);
+  if (window.electronAPI?.setZoomLevel) {
+    try {
+      const applied = await window.electronAPI.setZoomLevel(zoomLevel);
+      if (typeof applied === 'number' && !Number.isNaN(applied)) {
+        zoomLevel = clampZoomLevel(applied);
+      }
+    } catch (error) {
+      showToast(
+        `Zoom change failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  if (persist) {
+    persistUiPreferences();
+  }
+};
+
 const getActiveTab = () => (activeTabId ? tabs.find(tab => tab.id === activeTabId) ?? null : null);
+
+const handleMenuCommand = (command: string) => {
+  switch (command) {
+    case 'file:new':
+      createUntitledTab();
+      break;
+    case 'file:open':
+      void openFileViaDialog();
+      break;
+    case 'file:openFolder':
+      void openFolderViaDialog();
+      break;
+    case 'file:save':
+      void saveActiveTab(false);
+      break;
+    case 'file:saveAs':
+      void saveActiveTab(true);
+      break;
+    case 'file:closeTab':
+      if (activeTabId) {
+        closeTab(activeTabId);
+      }
+      break;
+    case 'file:closeOthers':
+      closeOtherTabs();
+      break;
+    case 'file:closeAll':
+      closeAllTabs();
+      break;
+    case 'edit:undo':
+      editor.trigger('menu', 'undo', undefined);
+      break;
+    case 'edit:redo':
+      editor.trigger('menu', 'redo', undefined);
+      break;
+    case 'edit:cut':
+      editor.trigger('menu', 'editor.action.clipboardCutAction', undefined);
+      break;
+    case 'edit:copy':
+      editor.trigger('menu', 'editor.action.clipboardCopyAction', undefined);
+      break;
+    case 'edit:paste':
+      editor.trigger('menu', 'editor.action.clipboardPasteAction', undefined);
+      break;
+    case 'edit:selectAll':
+      editor.trigger('menu', 'editor.action.selectAll', undefined);
+      break;
+    case 'edit:find':
+      editor.trigger('menu', 'actions.find', undefined);
+      break;
+    case 'edit:replace':
+      editor.trigger('menu', 'editor.action.startFindReplaceAction', undefined);
+      break;
+    case 'edit:goToLine': {
+      const input = window.prompt('Go to line number:');
+      if (!input) {
+        break;
+      }
+      const line = Number.parseInt(input, 10);
+      if (Number.isNaN(line) || line <= 0) {
+        showToast('Invalid line number.');
+        break;
+      }
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.focus();
+      break;
+    }
+    case 'view:toggleSidebar':
+      applySidebarVisibility(!sidebarVisible, true);
+      break;
+    case 'view:toggleActivity':
+      applyActivityVisibility(!activityVisible, true);
+      break;
+    case 'view:zoomIn':
+      void applyZoomLevel(zoomLevel + 0.5, true);
+      break;
+    case 'view:zoomOut':
+      void applyZoomLevel(zoomLevel - 0.5, true);
+      break;
+    case 'view:zoomReset':
+      void applyZoomLevel(0, true);
+      break;
+    case 'view:toggleMinimap':
+      applyMinimapPreference(!minimapEnabled, true);
+      break;
+    default:
+      break;
+  }
+};
 
 const renderTabs = () => {
   if (!tabList) {
@@ -224,8 +435,12 @@ const buildTreeNode = (node: DirectoryNode): HTMLLIElement => {
   return item;
 };
 
-const loadWorkspaceTree = async () => {
+const loadWorkspaceTree = async (override?: { rootPath: string; rootName?: string; snapshot: DirectoryNode | null }) => {
   if (!fileTreeContainer) {
+    return;
+  }
+  if (override) {
+    applyWorkspaceSnapshot(override);
     return;
   }
   if (!window.electronAPI?.listDirectory) {
@@ -235,11 +450,15 @@ const loadWorkspaceTree = async () => {
   }
   fileTreeContainer.innerHTML = '<p class="tree-placeholder">Loading workspace…</p>';
   try {
-    const snapshot = await window.electronAPI.listDirectory();
-    if (workspaceLabel && snapshot?.name) {
-      workspaceLabel.textContent = snapshot.name;
+    const payload = await window.electronAPI.listDirectory();
+    if (!payload) {
+      return;
     }
-    renderFileTree(snapshot);
+    applyWorkspaceSnapshot({
+      rootPath: payload.rootPath ?? workspaceRootPath,
+      rootName: payload.rootName ?? workspaceRootName,
+      snapshot: payload.snapshot ?? null
+    });
   } catch (error) {
     fileTreeContainer.innerHTML = '<p class="tree-placeholder">Failed to load workspace.</p>';
     showToast(
@@ -260,12 +479,25 @@ const openFileInTab = async (node: DirectoryNode) => {
   }
   try {
     const file = await window.electronAPI.readFile(node.path);
-    const language = inferLanguageFromPath(node.path);
+    const relativePath = file.relativePath ?? node.path;
+    const absolutePath = file.absolutePath;
+    const language = inferLanguageFromPath(absolutePath ?? relativePath ?? node.name);
+    const existing = findTabByPath(absolutePath, relativePath);
+    if (existing) {
+      existing.model.setValue(file.content);
+      existing.dirty = false;
+      renderTabs();
+      setActiveTab(existing.id);
+      pushStatus(`[${existing.title}] Reloaded from disk.`);
+      return;
+    }
     const model = monaco.editor.createModel(file.content, language);
+    const title = node.name || basename(relativePath ?? absolutePath ?? 'file');
     const newTab: EditorTab = {
       id: generateTabId(),
-      title: node.name,
-      path: node.path,
+      title,
+      path: relativePath ?? absolutePath ?? title,
+      absolutePath: absolutePath ?? undefined,
       model,
       dirty: false,
       language
@@ -277,55 +509,144 @@ const openFileInTab = async (node: DirectoryNode) => {
   }
 };
 
-const handleMenuAction = async (action?: string) => {
-  switch (action) {
-    case 'file': {
-      const defaultName = `untitled-${untitledCounter}.${languageFromSetting(
-        currentSettings?.targetLanguage
-      ) === 'python' ? 'py' : 'c'}`;
-      const requestedName = window.prompt('New file name (relative to workspace root):', defaultName);
-      if (!requestedName) {
-        break;
-      }
-      if (window.electronAPI?.createFile) {
-        try {
-          const created = await window.electronAPI.createFile(requestedName);
-          await loadWorkspaceTree();
-          await openFileInTab({
-            type: 'file',
-            name: requestedName.split(/[/\\]/).pop() ?? created.path,
-            path: created.path
-          });
-        } catch (error) {
-          showToast(
-            `Failed to create file: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      } else {
-        createUntitledTab();
-      }
-      break;
+const openFileViaDialog = async () => {
+  try {
+    const result = await window.electronAPI?.openFileDialog?.();
+    if (!result || result.canceled || !result.file) {
+      return;
     }
-    case 'edit':
-      editor.focus();
-      break;
-    case 'view':
-      await loadWorkspaceTree();
-      break;
-    default:
-      break;
+    const { file } = result;
+    const language = inferLanguageFromPath(file.absolutePath ?? file.relativePath ?? file.name);
+    const existing = findTabByPath(file.absolutePath, file.relativePath ?? undefined);
+    if (existing) {
+      existing.model.setValue(file.content);
+      existing.dirty = false;
+      renderTabs();
+      setActiveTab(existing.id);
+      pushStatus(`[${existing.title}] Reloaded from disk.`);
+      return;
+    }
+    const model = monaco.editor.createModel(file.content, language);
+    const title = file.name || basename(file.relativePath ?? file.absolutePath ?? 'file');
+    const newTab: EditorTab = {
+      id: generateTabId(),
+      title,
+      path: file.relativePath ?? file.absolutePath ?? title,
+      absolutePath: file.absolutePath,
+      model,
+      dirty: false,
+      language
+    };
+    tabs.push(newTab);
+    setActiveTab(newTab.id);
+    pushStatus(`Opened ${title}`);
+  } catch (error) {
+    showToast(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+};
+
+const openFolderViaDialog = async () => {
+  try {
+    const result = await window.electronAPI?.openFolderDialog?.();
+    if (!result || result.canceled || !result.snapshot) {
+      return;
+    }
+    await loadWorkspaceTree({
+      rootPath: result.rootPath ?? workspaceRootPath ?? '',
+      rootName: result.rootName,
+      snapshot: result.snapshot
+    });
+    pushStatus(`Workspace changed to ${result.rootName ?? result.rootPath}`);
+  } catch (error) {
+    showToast(`Open folder failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+
+const saveActiveTab = async (forceSaveAs = false) => {
+  const tab = getActiveTab();
+  if (!tab) {
+    return;
+  }
+  if (!window.electronAPI?.writeFile || !window.electronAPI.saveFileAs) {
+    showToast('Saving is not supported in this build.');
+    return;
+  }
+  const content = tab.model.getValue();
+  try {
+    if (!tab.absolutePath || forceSaveAs || !tab.path) {
+      const result = await window.electronAPI.saveFileAs({
+        defaultPath: tab.absolutePath ?? workspaceRootPath ?? undefined,
+        suggestedName: tab.title,
+        content
+      });
+      if (result.canceled) {
+        return;
+      }
+      tab.absolutePath = result.absolutePath ?? tab.absolutePath;
+      tab.path = result.relativePath ?? tab.absolutePath ?? tab.path;
+      if (result.name) {
+        tab.title = result.name;
+      } else if (tab.path) {
+        tab.title = basename(tab.path);
+      }
+      tab.dirty = false;
+      renderTabs();
+      pushStatus(`Saved ${tab.title}`);
+      await loadWorkspaceTree();
+    } else {
+      await window.electronAPI.writeFile({
+        absolutePath: tab.absolutePath,
+        relativePath: tab.path ?? undefined,
+        content
+      });
+      tab.dirty = false;
+      renderTabs();
+      pushStatus(`Saved ${tab.title}`);
+    }
+  } catch (error) {
+    showToast(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+
+const closeOtherTabs = () => {
+  const active = getActiveTab();
+  if (!active) {
+    return;
+  }
+  tabs.slice().forEach(tab => {
+    if (tab.id !== active.id) {
+      clearPromptsForTab(tab.id);
+      tab.model.dispose();
+    }
+  });
+  const survivors = tabs.filter(tab => tab.id === active.id);
+  tabs.length = 0;
+  tabs.push(...survivors);
+  activeTabId = active.id;
+  renderTabs();
+};
+
+const closeAllTabs = () => {
+  while (tabs.length) {
+    const tab = tabs.pop();
+    if (tab) {
+      clearPromptsForTab(tab.id);
+      tab.model.dispose();
+    }
+  }
+  activeTabId = null;
+  createUntitledTab();
 };
 
 tabAddButton?.addEventListener('click', () => createUntitledTab());
 sidebarRefreshButton?.addEventListener('click', () => {
   void loadWorkspaceTree();
 });
-tabMenuButtons.forEach(button =>
-  button.addEventListener('click', () => {
-    void handleMenuAction(button.dataset.menu);
-  })
-);
+
+disposeMenuListener = window.electronAPI?.onMenuCommand?.(handleMenuCommand) ?? disposeMenuListener;
+window.addEventListener('beforeunload', () => {
+  disposeMenuListener?.();
+});
 
 let autoTranslate = true;
 let lastDecorations: string[] = [];
@@ -877,6 +1198,15 @@ initSettingsUI({
     contextLimits.before = Math.max(200, settings.context.beforeChars);
     contextLimits.after = Math.max(100, settings.context.afterChars);
     autoTranslate = settings.autoTranslate;
+
+    const uiPrefs = settings.ui ?? {};
+    applySidebarVisibility(uiPrefs.sidebarVisible ?? true);
+    applyActivityVisibility(uiPrefs.activityVisible ?? true);
+    applyMinimapPreference(uiPrefs.minimapEnabled ?? true);
+    void applyZoomLevel(
+      typeof uiPrefs.zoomLevel === 'number' ? uiPrefs.zoomLevel : 0,
+      false
+    );
 
     if (autoToggle) {
       ignoreAutoToggleChange = true;

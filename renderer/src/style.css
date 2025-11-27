@@ -87,11 +87,28 @@ body {
   min-height: 0;
 }
 
+.workspace.sidebar-hidden {
+  grid-template-columns: 0px 1fr 260px;
+}
+
+.workspace.activity-hidden {
+  grid-template-columns: 240px 1fr 0px;
+}
+
+.workspace.sidebar-hidden.activity-hidden {
+  grid-template-columns: 0px 1fr 0px;
+}
+
 .sidebar {
   border-right: 1px solid #1b202d;
   background: #0b1019;
   display: flex;
   flex-direction: column;
+}
+
+.sidebar.is-hidden,
+.status-panel.is-hidden {
+  display: none;
 }
 
 .sidebar-header {
@@ -181,31 +198,6 @@ body {
   padding: 0 0.6rem;
   border-bottom: 1px solid #1b202d;
   background: linear-gradient(180deg, #131723, #0d111a);
-}
-
-.tab-menu {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-  padding-right: 0.6rem;
-}
-
-.menu-link {
-  border: none;
-  background: transparent;
-  color: #b7bccb;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  padding: 0.2rem 0.3rem;
-  border-radius: 3px;
-}
-
-.menu-link:hover {
-  background: rgba(138, 180, 255, 0.15);
-  color: #e1e5f2;
 }
 
 .tab-list {

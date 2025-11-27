@@ -29,6 +29,12 @@ export interface EditorSettings {
     apiKey: string;
     model: string;
   };
+  ui?: {
+    sidebarVisible?: boolean;
+    activityVisible?: boolean;
+    minimapEnabled?: boolean;
+    zoomLevel?: number;
+  };
 }
 
 export interface DirectoryNode {
@@ -39,9 +45,28 @@ export interface DirectoryNode {
 }
 
 export interface FileReadResult {
-  path: string;
+  path: string | null;
+  relativePath: string | null;
+  absolutePath: string;
   content: string;
   modified: number;
+}
+
+export interface FileDialogResult {
+  canceled: boolean;
+  file?: {
+    name: string;
+    absolutePath: string;
+    relativePath: string | null;
+    content: string;
+  };
+}
+
+export interface SaveResult {
+  canceled: boolean;
+  absolutePath?: string;
+  relativePath?: string | null;
+  name?: string;
 }
 
 declare global {
@@ -50,9 +75,29 @@ declare global {
       translateLine(payload: TranslateLinePayload): Promise<TranslateLineResponse>;
       loadSettings(): Promise<EditorSettings>;
       saveSettings(payload: Partial<EditorSettings>): Promise<EditorSettings>;
-      listDirectory(): Promise<DirectoryNode>;
+      listDirectory(): Promise<{
+        rootPath: string;
+        rootName: string;
+        snapshot: DirectoryNode;
+      }>;
       readFile(relativePath: string): Promise<FileReadResult>;
-      createFile(relativePath: string): Promise<{ path: string }>;
+      createFile(relativePath: string): Promise<{ path: string | null; absolutePath: string }>;
+      writeFile(payload: { absolutePath?: string; relativePath?: string; content: string }): Promise<{
+        absolutePath: string;
+        relativePath: string | null;
+        name: string;
+      }>;
+      saveFileAs(payload: { defaultPath?: string; suggestedName?: string; content: string }): Promise<SaveResult>;
+      openFileDialog(): Promise<FileDialogResult>;
+      openFolderDialog(): Promise<{
+        canceled: boolean;
+        rootPath?: string;
+        rootName?: string;
+        snapshot?: DirectoryNode;
+      }>;
+      getZoomLevel?(): Promise<number>;
+      setZoomLevel?(level: number): Promise<number>;
+      onMenuCommand?(callback: (command: string) => void): () => void;
     };
   }
 }

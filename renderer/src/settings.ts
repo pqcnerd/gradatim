@@ -14,6 +14,12 @@ const DEFAULT_SETTINGS: EditorSettings = {
     apiKey: '',
     model: 'gemini-1.5-flash',
   },
+  ui: {
+    sidebarVisible: true,
+    activityVisible: true,
+    minimapEnabled: true,
+    zoomLevel: 0,
+  },
 };
 
 interface InitOptions {
@@ -57,6 +63,10 @@ function mergeSettings(base: EditorSettings, incoming?: Partial<EditorSettings>)
     ai: {
       ...base.ai,
       ...(incoming.ai ?? {}),
+    },
+    ui: {
+      ...base.ui,
+      ...(incoming.ui ?? {}),
     },
   };
 }
