@@ -1,10 +1,13 @@
 const path = require('node:path');
+const fs = require('node:fs');
+const { promises: fsPromises } = require('node:fs');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { createConfigStore, DEFAULT_SETTINGS } = require('./config-store');
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const devServerURL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
 const fallbackRustEndpoint = process.env.RUST_CORE_URL || DEFAULT_SETTINGS.rustCoreUrl;
+const workspaceRoot = process.cwd();
 let configStore;
 let currentSettings = { ...DEFAULT_SETTINGS };
 let rustEndpoint = fallbackRustEndpoint;
@@ -74,6 +77,30 @@ app.whenReady().then(() => {
     return currentSettings;
   });
 
+  ipcMain.handle('fs:list', async () => buildDirectorySnapshot(workspaceRoot));
+
+  ipcMain.handle('fs:read-file', async (_event, relativePath) => {
+    const target = resolveWorkspacePath(relativePath);
+    const content = await fsPromises.readFile(target, 'utf8');
+    const stat = await fsPromises.stat(target);
+    return {
+      path: normalizeRelative(target),
+      content,
+      modified: stat.mtimeMs
+    };
+  });
+
+  ipcMain.handle('fs:new-file', async (_event, relativePath) => {
+    const target = resolveWorkspacePath(relativePath);
+    await fsPromises.mkdir(path.dirname(target), { recursive: true });
+    await fsPromises.writeFile(target, '', { flag: 'wx' }).catch(error => {
+      if (error.code !== 'EEXIST') {
+        throw error;
+      }
+    });
+    return { path: normalizeRelative(target) };
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
@@ -89,5 +116,60 @@ app.on('window-all-closed', () => {
   ipcMain.removeHandler('translate-line');
   ipcMain.removeHandler('settings:get');
   ipcMain.removeHandler('settings:save');
+  ipcMain.removeHandler('fs:list');
+  ipcMain.removeHandler('fs:read-file');
+  ipcMain.removeHandler('fs:new-file');
 });
+
+const IGNORED_ENTRIES = new Set(['node_modules', '.git', '.cursor', 'dist']);
+const MAX_DEPTH = 4;
+
+function buildDirectorySnapshot(dirPath, depth = 0) {
+  const node = {
+    type: 'folder',
+    name: path.basename(dirPath) || path.basename(workspaceRoot),
+    path: normalizeRelative(dirPath),
+    children: []
+  };
+
+  if (depth >= MAX_DEPTH) {
+    return node;
+  }
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) {
+      continue;
+    }
+    if (IGNORED_ENTRIES.has(entry.name)) {
+      continue;
+    }
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      node.children.push(buildDirectorySnapshot(fullPath, depth + 1));
+    } else {
+      node.children.push({
+        type: 'file',
+        name: entry.name,
+        path: normalizeRelative(fullPath)
+      });
+    }
+  }
+
+  return node;
+}
+
+function resolveWorkspacePath(relativePath = '.') {
+  const normalized = path.normalize(relativePath);
+  const targetPath = path.resolve(workspaceRoot, normalized);
+  if (!targetPath.startsWith(workspaceRoot)) {
+    throw new Error('Path escapes workspace boundary');
+  }
+  return targetPath;
+}
+
+function normalizeRelative(targetPath) {
+  const relative = path.relative(workspaceRoot, targetPath) || '.';
+  return relative.replace(/\\/g, '/');
+}
 

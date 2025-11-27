@@ -32,6 +32,7 @@ pub struct TranslateLineResponse {
 pub enum ResponseKind {
     Ok,
     Error,
+    Unhandled,
 }
 
 impl TranslateLineResponse {
@@ -48,6 +49,14 @@ impl TranslateLineResponse {
             kind: ResponseKind::Error,
             code: None,
             message: Some(message.into()),
+        }
+    }
+
+    pub fn unhandled<S: Into<String>>(placeholder: S) -> Self {
+        Self {
+            kind: ResponseKind::Unhandled,
+            code: Some(placeholder.into()),
+            message: Some("Rule-based translator could not interpret this instruction.".into()),
         }
     }
 }

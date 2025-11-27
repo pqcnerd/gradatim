@@ -7,11 +7,8 @@
   </head>
   <body>
     <div id="app">
-      <header class="app-header">
-        <div>
-          <h1>Gradatim Prototype</h1>
-          <p>Type English instructions line-by-line. Press Enter or Ctrl+Enter to queue a translation.</p>
-        </div>
+      <header class="top-bar">
+        <span id="workspace-label" class="workspace-label">Gradatim Workspace</span>
         <div class="app-controls">
           <label class="control">
             Target
@@ -24,19 +21,39 @@
             <input type="checkbox" id="auto-toggle" checked />
             Auto on Enter
           </label>
-          <button type="button" id="regenerate-btn">Regenerate line</button>
+          <button type="button" id="regenerate-btn">Regenerate</button>
           <button type="button" id="open-settings">Settings</button>
         </div>
       </header>
-      <main class="app-main">
-        <section class="editor-panel">
-          <div id="editor"></div>
-        </section>
+      <div class="workspace">
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <span>Files</span>
+            <button type="button" class="sidebar-action" id="sidebar-refresh" title="Refresh">↻</button>
+          </div>
+          <div id="file-tree" class="file-tree">
+            <p class="tree-placeholder">File tree coming soon…</p>
+          </div>
+        </aside>
+        <main class="editor-area">
+          <div class="tab-strip">
+            <div class="tab-menu">
+              <button type="button" class="menu-link" data-menu="file">File</button>
+              <button type="button" class="menu-link" data-menu="edit">Edit</button>
+              <button type="button" class="menu-link" data-menu="view">View</button>
+            </div>
+            <div class="tab-list" id="tab-list"></div>
+            <button type="button" class="tab-add" id="tab-add" title="New tab">+</button>
+          </div>
+          <section class="editor-panel">
+            <div id="editor"></div>
+          </section>
+        </main>
         <aside class="status-panel">
           <h2>Line activity</h2>
           <ul id="status-log"></ul>
         </aside>
-      </main>
+      </div>
     </div>
     <div id="settings-modal" class="modal" aria-hidden="true">
       <div class="modal-content">

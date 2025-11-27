@@ -1,5 +1,5 @@
 export interface TranslateLineResponse {
-  kind: 'ok' | 'error';
+  kind: 'ok' | 'error' | 'unhandled';
   code?: string;
   message?: string;
 }
@@ -31,12 +31,28 @@ export interface EditorSettings {
   };
 }
 
+export interface DirectoryNode {
+  type: 'file' | 'folder';
+  name: string;
+  path: string;
+  children?: DirectoryNode[];
+}
+
+export interface FileReadResult {
+  path: string;
+  content: string;
+  modified: number;
+}
+
 declare global {
   interface Window {
     electronAPI?: {
       translateLine(payload: TranslateLinePayload): Promise<TranslateLineResponse>;
       loadSettings(): Promise<EditorSettings>;
       saveSettings(payload: Partial<EditorSettings>): Promise<EditorSettings>;
+      listDirectory(): Promise<DirectoryNode>;
+      readFile(relativePath: string): Promise<FileReadResult>;
+      createFile(relativePath: string): Promise<{ path: string }>;
     };
   }
 }

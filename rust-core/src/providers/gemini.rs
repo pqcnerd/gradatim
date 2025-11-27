@@ -80,6 +80,17 @@ impl AiProvider for GeminiProvider {
             .await
             .context("Gemini JSON payload could not be parsed")?;
 
+        if let Some(err) = response.error {
+            return Err(anyhow!(
+                "Gemini API error: {}{}",
+                err.message,
+                err.status
+                    .as_ref()
+                    .map(|status| format!(" ({status})"))
+                    .unwrap_or_default()
+            ));
+        }
+
         let text = response
             .candidates
             .unwrap_or_default()
@@ -106,6 +117,7 @@ struct GeminiRequest {
 #[derive(Debug, Serialize, Deserialize)]
 struct GeminiContent {
     role: String,
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
@@ -124,6 +136,16 @@ struct GenerationConfig {
 #[derive(Debug, Deserialize)]
 struct GeminiResponse {
     candidates: Option<Vec<GeminiCandidate>>,
+    error: Option<GeminiErrorBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiErrorBody {
+    message: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    code: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]

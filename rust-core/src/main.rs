@@ -102,7 +102,10 @@ fn respond_with_rule_based(
             let message = err.to_string();
             if message.starts_with("UNHANDLED:") {
                 let placeholder = todo_placeholder(&payload.language, &payload.english_line);
-                return (StatusCode::OK, Json(TranslateLineResponse::ok(placeholder)));
+                return (
+                    StatusCode::OK,
+                    Json(TranslateLineResponse::unhandled(placeholder)),
+                );
             }
 
             error!("translate_line failed: {err:?}");

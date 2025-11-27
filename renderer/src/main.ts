@@ -2,7 +2,7 @@ import * as monaco from 'monaco-editor';
 import './style.css';
 import { translateLine } from './api/translatorClient';
 import { initSettingsUI } from './settings';
-import type { EditorSettings, TranslateLinePayload } from './types/electron';
+import type { DirectoryNode, EditorSettings, TranslateLinePayload } from './types/electron';
 
 type LineTrigger = 'enter' | 'shortcut' | 'regenerate';
 
@@ -12,8 +12,14 @@ const autoToggle = document.getElementById('auto-toggle') as HTMLInputElement | 
 const languageSelect = document.getElementById('language-select') as HTMLSelectElement | null;
 const regenerateButton = document.getElementById('regenerate-btn') as HTMLButtonElement | null;
 const toast = document.getElementById('toast');
+const fileTreeContainer = document.getElementById('file-tree');
+const tabList = document.getElementById('tab-list') as HTMLDivElement | null;
+const tabAddButton = document.getElementById('tab-add') as HTMLButtonElement | null;
+const workspaceLabel = document.getElementById('workspace-label');
+const sidebarRefreshButton = document.getElementById('sidebar-refresh');
+const tabMenuButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.menu-link'));
 
-if (!editorContainer || !statusList || !toast) {
+if (!editorContainer || !statusList || !toast || !fileTreeContainer || !tabList) {
   throw new Error('Renderer root elements are missing. Check index.html structure.');
 }
 
@@ -23,32 +29,329 @@ const welcomeSnippet = [
   '',
   'declare a, b 0',
   'set a to 5',
-  'if a is greater than b print a otherwise print b'
+  'if a is greater than b'
 ].join('\n');
+
+type EditorTab = {
+  id: string;
+  title: string;
+  path?: string;
+  model: monaco.editor.ITextModel;
+  dirty: boolean;
+  language: string;
+};
+
+const tabs: EditorTab[] = [];
+let activeTabId: string | null = null;
+let untitledCounter = 1;
 
 const editor = monaco.editor.create(editorContainer, {
   language: 'c',
-  value: welcomeSnippet,
+  value: '',
   automaticLayout: true,
-  minimap: { enabled: false },
+  minimap: { enabled: true, renderCharacters: false, showSlider: 'always' },
   fontSize: 16,
   fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
   cursorSmoothCaretAnimation: 'on',
   renderWhitespace: 'trailing',
   scrollBeyondLastLine: false,
-  theme: 'vs-dark'
+  theme: 'vs-dark',
+  quickSuggestions: false,
+  suggestOnTriggerCharacters: false,
+  wordBasedSuggestions: 'off',
+  acceptSuggestionOnEnter: 'off',
+  acceptSuggestionOnCommitCharacter: false
 });
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  '.c': 'c',
+  '.h': 'c',
+  '.cpp': 'cpp',
+  '.hpp': 'cpp',
+  '.py': 'python',
+  '.js': 'javascript',
+  '.ts': 'typescript'
+};
+
+const languageFromSetting = (setting?: string) =>
+  setting && setting.toLowerCase() === 'python' ? 'python' : 'c';
+
+const inferLanguageFromPath = (filePath?: string) => {
+  if (!filePath) {
+    return 'c';
+  }
+  const lower = filePath.toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  if (dot === -1) {
+    return 'c';
+  }
+  const ext = lower.slice(dot);
+  return LANGUAGE_BY_EXTENSION[ext] ?? 'c';
+};
+
+const generateTabId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const getActiveTab = () => (activeTabId ? tabs.find(tab => tab.id === activeTabId) ?? null : null);
+
+const renderTabs = () => {
+  if (!tabList) {
+    return;
+  }
+  tabList.innerHTML = '';
+  tabs.forEach(tab => {
+    const tabElement = document.createElement('div');
+    tabElement.className = `tab${tab.id === activeTabId ? ' active' : ''}`;
+    const title = document.createElement('span');
+    title.className = 'tab-title';
+    title.textContent = tab.dirty ? `${tab.title} •` : tab.title;
+    tabElement.appendChild(title);
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'tab-close';
+    closeButton.textContent = '×';
+    closeButton.addEventListener('click', event => {
+      event.stopPropagation();
+      closeTab(tab.id);
+    });
+
+    tabElement.addEventListener('click', () => setActiveTab(tab.id));
+    tabElement.appendChild(closeButton);
+    tabList.appendChild(tabElement);
+  });
+};
+
+const setActiveTab = (tabId: string) => {
+  const nextTab = tabs.find(tab => tab.id === tabId);
+  if (!nextTab) {
+    return;
+  }
+  activeTabId = tabId;
+  editor.setModel(nextTab.model);
+  monaco.editor.setModelLanguage(nextTab.model, nextTab.language);
+  renderTabs();
+  editor.focus();
+};
+
+const closeTab = (tabId: string) => {
+  const index = tabs.findIndex(tab => tab.id === tabId);
+  if (index === -1) {
+    return;
+  }
+  const [removed] = tabs.splice(index, 1);
+  clearPromptsForTab(removed.id);
+  removed.model.dispose();
+
+  if (activeTabId === tabId) {
+    if (tabs.length === 0) {
+      createUntitledTab();
+    } else {
+      const fallbackIndex = index === 0 ? 0 : index - 1;
+      setActiveTab(tabs[fallbackIndex].id);
+    }
+  } else {
+    renderTabs();
+  }
+};
+
+const createUntitledTab = (initialValue = '', language?: string) => {
+  const lang = language ?? languageFromSetting(currentSettings?.targetLanguage);
+  const extension = lang === 'python' ? 'py' : 'c';
+  const title = `untitled-${untitledCounter++}.${extension}`;
+  const model = monaco.editor.createModel(initialValue, lang);
+  const newTab: EditorTab = {
+    id: generateTabId(),
+    title,
+    path: undefined,
+    model,
+    dirty: false,
+    language: lang
+  };
+  tabs.push(newTab);
+  setActiveTab(newTab.id);
+};
+
+const renderFileTree = (root: DirectoryNode | null) => {
+  if (!fileTreeContainer) {
+    return;
+  }
+  if (!root || !(root.children?.length)) {
+    fileTreeContainer.innerHTML =
+      '<p class="tree-placeholder">No files detected in this workspace.</p>';
+    return;
+  }
+  const list = document.createElement('ul');
+  list.className = 'tree-children';
+  root.children.forEach(child => list.appendChild(buildTreeNode(child)));
+  fileTreeContainer.innerHTML = '';
+  fileTreeContainer.appendChild(list);
+};
+
+const buildTreeNode = (node: DirectoryNode): HTMLLIElement => {
+  const item = document.createElement('li');
+  item.className = 'tree-node';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'tree-title';
+  const glyph = document.createElement('span');
+  glyph.className = 'tree-glyph';
+  glyph.textContent = node.type === 'folder' ? '▾' : '•';
+  button.appendChild(glyph);
+  const label = document.createElement('span');
+  label.textContent = node.name;
+  button.appendChild(label);
+  item.appendChild(button);
+
+  if (node.type === 'folder') {
+    const children = document.createElement('ul');
+    children.className = 'tree-children';
+    (node.children ?? []).forEach(child => children.appendChild(buildTreeNode(child)));
+    item.appendChild(children);
+    button.addEventListener('click', () => {
+      const collapsed = item.classList.toggle('collapsed');
+      glyph.textContent = collapsed ? '▸' : '▾';
+      children.hidden = collapsed;
+    });
+  } else {
+    button.addEventListener('click', () => {
+      void openFileInTab(node);
+    });
+  }
+
+  return item;
+};
+
+const loadWorkspaceTree = async () => {
+  if (!fileTreeContainer) {
+    return;
+  }
+  if (!window.electronAPI?.listDirectory) {
+    fileTreeContainer.innerHTML =
+      '<p class="tree-placeholder">File system bridge unavailable in this build.</p>';
+    return;
+  }
+  fileTreeContainer.innerHTML = '<p class="tree-placeholder">Loading workspace…</p>';
+  try {
+    const snapshot = await window.electronAPI.listDirectory();
+    if (workspaceLabel && snapshot?.name) {
+      workspaceLabel.textContent = snapshot.name;
+    }
+    renderFileTree(snapshot);
+  } catch (error) {
+    fileTreeContainer.innerHTML = '<p class="tree-placeholder">Failed to load workspace.</p>';
+    showToast(
+      `File tree error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
+const openFileInTab = async (node: DirectoryNode) => {
+  if (!window.electronAPI?.readFile) {
+    showToast('File open not supported in this build.');
+    return;
+  }
+  const existing = tabs.find(tab => tab.path === node.path);
+  if (existing) {
+    setActiveTab(existing.id);
+    return;
+  }
+  try {
+    const file = await window.electronAPI.readFile(node.path);
+    const language = inferLanguageFromPath(node.path);
+    const model = monaco.editor.createModel(file.content, language);
+    const newTab: EditorTab = {
+      id: generateTabId(),
+      title: node.name,
+      path: node.path,
+      model,
+      dirty: false,
+      language
+    };
+    tabs.push(newTab);
+    setActiveTab(newTab.id);
+  } catch (error) {
+    showToast(`Failed to open ${node.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+
+const handleMenuAction = async (action?: string) => {
+  switch (action) {
+    case 'file': {
+      const defaultName = `untitled-${untitledCounter}.${languageFromSetting(
+        currentSettings?.targetLanguage
+      ) === 'python' ? 'py' : 'c'}`;
+      const requestedName = window.prompt('New file name (relative to workspace root):', defaultName);
+      if (!requestedName) {
+        break;
+      }
+      if (window.electronAPI?.createFile) {
+        try {
+          const created = await window.electronAPI.createFile(requestedName);
+          await loadWorkspaceTree();
+          await openFileInTab({
+            type: 'file',
+            name: requestedName.split(/[/\\]/).pop() ?? created.path,
+            path: created.path
+          });
+        } catch (error) {
+          showToast(
+            `Failed to create file: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      } else {
+        createUntitledTab();
+      }
+      break;
+    }
+    case 'edit':
+      editor.focus();
+      break;
+    case 'view':
+      await loadWorkspaceTree();
+      break;
+    default:
+      break;
+  }
+};
+
+tabAddButton?.addEventListener('click', () => createUntitledTab());
+sidebarRefreshButton?.addEventListener('click', () => {
+  void loadWorkspaceTree();
+});
+tabMenuButtons.forEach(button =>
+  button.addEventListener('click', () => {
+    void handleMenuAction(button.dataset.menu);
+  })
+);
 
 let autoTranslate = true;
 let lastDecorations: string[] = [];
 let requestCounter = 0;
-const pendingRequests = new Map<number, number>();
+const pendingRequests = new Map<string, number>();
 let lastTriggeredLine: number | null = null;
+let lastTriggeredTabId: string | null = null;
 let toastTimeout: ReturnType<typeof setTimeout> | undefined;
 let ignoreAutoToggleChange = true;
 const contextLimits = { before: 1600, after: 900 };
 let currentSettings: EditorSettings | null = null;
 const defaultMaxLines = 3;
+const STATUS_LOG_LIMIT = 7;
+
+type PendingPromptContext = {
+  key: string;
+  tabId: string;
+  lineNumber: number;
+  englishLine: string;
+  placeholder: string;
+  element: HTMLLIElement;
+};
+
+const pendingPrompts = new Map<string, PendingPromptContext>();
+
+const makePromptKey = (tabId: string, lineNumber: number) => `${tabId}:${lineNumber}`;
 
 autoToggle?.addEventListener('change', (event: Event) => {
   if (ignoreAutoToggleChange) {
@@ -60,9 +363,12 @@ autoToggle?.addEventListener('change', (event: Event) => {
 });
 
 regenerateButton?.addEventListener('click', () => {
-  if (lastTriggeredLine == null) {
+  if (lastTriggeredLine == null || !lastTriggeredTabId) {
     showToast('Translate a line first to enable regeneration.');
     return;
+  }
+  if (lastTriggeredTabId !== activeTabId) {
+    setActiveTab(lastTriggeredTabId);
   }
   enqueueTranslation(lastTriggeredLine, 'regenerate');
 });
@@ -92,17 +398,184 @@ languageSelect?.addEventListener('change', (event: Event) => {
 
 const pushStatus = (message: string) => {
   const li = document.createElement('li');
+  li.className = 'status-entry';
   li.textContent = `${new Date().toLocaleTimeString()} — ${message}`;
   statusList.prepend(li);
+  trimStatusLog();
+};
 
-  while (statusList.childElementCount > 6) {
-    const tail = statusList.lastElementChild;
-    if (tail) {
-      statusList.removeChild(tail);
-    } else {
-      break;
-    }
+const trimStatusLog = () => {
+  const children = Array.from(statusList.children);
+  if (children.length <= STATUS_LOG_LIMIT) {
+    return;
   }
+
+  let removed = 0;
+  for (let idx = children.length - 1; idx >= 0 && children.length - removed > STATUS_LOG_LIMIT; idx -= 1) {
+    const entry = children[idx] as HTMLElement;
+    if (entry.classList.contains('status-entry--prompt')) {
+      continue;
+    }
+    statusList.removeChild(entry);
+    removed += 1;
+  }
+};
+
+const resolvePrompt = (tabId: string, lineNumber: number) => {
+  const key = makePromptKey(tabId, lineNumber);
+  const context = pendingPrompts.get(key);
+  if (!context) {
+    return;
+  }
+
+  pendingPrompts.delete(key);
+  context.element.remove();
+};
+
+const clearPromptsForTab = (tabId: string) => {
+  Array.from(pendingPrompts.values())
+    .filter(context => context.tabId === tabId)
+    .forEach(context => {
+      pendingPrompts.delete(context.key);
+      context.element.remove();
+    });
+};
+
+const buildTodoPlaceholder = (englishLine: string) => {
+  const trimmed = englishLine.trim();
+  const lang = (currentSettings?.targetLanguage ?? 'c').toLowerCase();
+  if (lang === 'python') {
+    return `# TODO: ${trimmed}`;
+  }
+  return `// TODO: ${trimmed}`;
+};
+
+const showUnrecognizedPrompt = (
+  tab: EditorTab,
+  lineNumber: number,
+  englishLine: string,
+  placeholder: string,
+  message?: string
+) => {
+  const key = makePromptKey(tab.id, lineNumber);
+  resolvePrompt(tab.id, lineNumber);
+
+  const li = document.createElement('li');
+  li.className = 'status-entry status-entry--prompt';
+
+  const title = document.createElement('div');
+  title.className = 'prompt-title';
+  title.textContent = `[${tab.title}] Line ${lineNumber} needs guidance`;
+
+  const description = document.createElement('div');
+  description.className = 'prompt-description';
+  description.textContent =
+    message ?? 'Neither the AI nor the rule-based translator could interpret this instruction.';
+
+  const instruction = document.createElement('div');
+  instruction.className = 'prompt-instruction';
+  instruction.textContent = `“${englishLine}”`;
+
+  const actions = document.createElement('div');
+  actions.className = 'prompt-actions';
+
+  const manualButton = document.createElement('button');
+  manualButton.type = 'button';
+  manualButton.textContent = 'Enter code';
+
+  const retryButton = document.createElement('button');
+  retryButton.type = 'button';
+  retryButton.textContent = 'Retry with AI';
+
+  const skipButton = document.createElement('button');
+  skipButton.type = 'button';
+  skipButton.textContent = 'Skip / TODO';
+
+  actions.append(manualButton, retryButton, skipButton);
+  li.append(title, description, instruction, actions);
+  statusList.prepend(li);
+
+  const context: PendingPromptContext = {
+    key,
+    tabId: tab.id,
+    lineNumber,
+    englishLine,
+    placeholder,
+    element: li
+  };
+
+  pendingPrompts.set(key, context);
+  trimStatusLog();
+
+  manualButton.addEventListener('click', () => {
+    renderManualInput(context);
+  });
+
+  retryButton.addEventListener('click', () => {
+    resolvePrompt(context.tabId, context.lineNumber);
+    setActiveTab(context.tabId);
+    enqueueTranslation(context.lineNumber, 'regenerate');
+  });
+
+  skipButton.addEventListener('click', () => {
+    const snippet =
+      context.placeholder && context.placeholder.trim().length > 0
+        ? context.placeholder
+        : buildTodoPlaceholder(context.englishLine);
+    applyTranslation(context.tabId, context.lineNumber, snippet);
+    pushStatus(
+      `[${tab.title}] Line ${context.lineNumber} left as TODO.`
+    );
+    resolvePrompt(context.tabId, context.lineNumber);
+  });
+};
+
+const renderManualInput = (context: PendingPromptContext) => {
+  const existing = context.element.querySelector('.prompt-manual');
+  if (existing) {
+    const textarea = existing.querySelector('textarea') as HTMLTextAreaElement | null;
+    textarea?.focus();
+    return;
+  }
+
+  const manual = document.createElement('div');
+  manual.className = 'prompt-manual';
+  const textarea = document.createElement('textarea');
+  textarea.rows = 4;
+  textarea.placeholder = 'Type the code to insert…';
+  manual.appendChild(textarea);
+
+  const manualActions = document.createElement('div');
+  manualActions.className = 'prompt-actions prompt-actions--inline';
+
+  const insertButton = document.createElement('button');
+  insertButton.type = 'button';
+  insertButton.textContent = 'Insert code';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.textContent = 'Cancel';
+
+  manualActions.append(insertButton, cancelButton);
+  manual.appendChild(manualActions);
+  context.element.appendChild(manual);
+  textarea.focus();
+
+  insertButton.addEventListener('click', () => {
+    const snippet = textarea.value.trim();
+    if (!snippet) {
+      textarea.focus();
+      return;
+    }
+    applyTranslation(context.tabId, context.lineNumber, snippet);
+    const tabTitle = tabs.find(tab => tab.id === context.tabId)?.title ?? 'Untitled';
+    pushStatus(`[${tabTitle}] Manual code inserted for line ${context.lineNumber}.`);
+    resolvePrompt(context.tabId, context.lineNumber);
+  });
+
+  cancelButton.addEventListener('click', () => {
+    manual.remove();
+  });
 };
 
 const showToast = (message: string) => {
@@ -116,7 +589,17 @@ const showToast = (message: string) => {
   }, 3200);
 };
 
-const highlightLine = (lineNumber: number, variant: 'pending' | 'error' | 'success' = 'pending') => {
+createUntitledTab(welcomeSnippet);
+loadWorkspaceTree();
+
+const highlightLine = (
+  tabId: string,
+  lineNumber: number,
+  variant: 'pending' | 'error' | 'success' = 'pending'
+) => {
+  if (tabId !== activeTabId) {
+    return;
+  }
   const className = variant === 'error' ? 'line-commit-error' : 'line-commit-decoration';
   lastDecorations = editor.deltaDecorations(lastDecorations, [
     {
@@ -134,12 +617,7 @@ const highlightLine = (lineNumber: number, variant: 'pending' | 'error' | 'succe
   }, 1100);
 };
 
-const collectContext = (lineNumber: number) => {
-  const model = editor.getModel();
-  if (!model) {
-    return { code_before: '', code_after: '' };
-  }
-
+const collectContext = (model: monaco.editor.ITextModel, lineNumber: number) => {
   const beforeRange = new monaco.Range(1, 1, lineNumber, 1);
   const afterRange = new monaco.Range(lineNumber + 1, 1, model.getLineCount() + 1, 1);
   const rawBefore = model.getValueInRange(beforeRange).trimEnd();
@@ -185,12 +663,13 @@ const ensureStructuralCompleteness = (snippet: string, language: string | undefi
   return snippet;
 };
 
-const applyTranslation = (lineNumber: number, rawSnippet: string) => {
-  const model = editor.getModel();
-  if (!model) {
+const applyTranslation = (tabId: string, lineNumber: number, rawSnippet: string) => {
+  const targetTab = tabs.find(tab => tab.id === tabId);
+  if (!targetTab) {
     return;
   }
 
+  const model = targetTab.model;
   const snippet = ensureStructuralCompleteness(rawSnippet, currentSettings?.targetLanguage);
   const original = model.getLineContent(lineNumber);
   const indent = original.match(/^\s*/)?.[0] ?? '';
@@ -201,11 +680,17 @@ const applyTranslation = (lineNumber: number, rawSnippet: string) => {
 
   const range = new monaco.Range(lineNumber, 1, lineNumber, original.length + 1);
   model.pushEditOperations([], [{ range, text: indentedSnippet }], () => null);
-  highlightLine(lineNumber, 'success');
+  targetTab.dirty = true;
+  renderTabs();
+  highlightLine(tabId, lineNumber, 'success');
 };
 
-const buildPayload = (lineNumber: number, englishLine: string): TranslateLinePayload => {
-  const { code_before, code_after } = collectContext(lineNumber);
+const buildPayload = (
+  model: monaco.editor.ITextModel,
+  lineNumber: number,
+  englishLine: string
+): TranslateLinePayload => {
+  const { code_before, code_after } = collectContext(model, lineNumber);
   const apiKey = currentSettings?.ai.apiKey.trim();
   return {
     english_line: englishLine,
@@ -283,11 +768,12 @@ const classifyLine = (line: string): string | null => {
 };
 
 const enqueueTranslation = async (lineNumber: number, trigger: LineTrigger) => {
-  const model = editor.getModel();
-  if (!model) {
+  const targetTab = getActiveTab();
+  if (!targetTab) {
     return;
   }
 
+  const model = targetTab.model;
   const rawLine = model.getLineContent(lineNumber);
   if (!rawLine.trim().length) {
     pushStatus(`Skipped empty line ${lineNumber}.`);
@@ -303,38 +789,56 @@ const enqueueTranslation = async (lineNumber: number, trigger: LineTrigger) => {
     }
   }
 
-  const payload = buildPayload(lineNumber, rawLine.trim());
+  const englishInstruction = rawLine.trim();
+  const payload = buildPayload(model, lineNumber, englishInstruction);
   const requestId = ++requestCounter;
-  pendingRequests.set(lineNumber, requestId);
+  const requestKey = `${targetTab.id}:${lineNumber}`;
+  pendingRequests.set(requestKey, requestId);
   lastTriggeredLine = lineNumber;
+  lastTriggeredTabId = targetTab.id;
 
-  highlightLine(lineNumber);
-  pushStatus(`Queued line ${lineNumber} via ${trigger}.`);
+  highlightLine(targetTab.id, lineNumber);
+  pushStatus(`[${targetTab.title}] Queued line ${lineNumber} via ${trigger}.`);
 
   const result = await translateLine(payload);
 
-  if (pendingRequests.get(lineNumber) !== requestId) {
-    pendingRequests.delete(lineNumber);
+  if (pendingRequests.get(requestKey) !== requestId) {
+    pendingRequests.delete(requestKey);
     return;
   }
 
-  pendingRequests.delete(lineNumber);
+  pendingRequests.delete(requestKey);
 
   if (result.kind === 'ok') {
-    applyTranslation(lineNumber, result.code);
+    resolvePrompt(targetTab.id, lineNumber);
+    applyTranslation(targetTab.id, lineNumber, result.code);
     const producedLines = Math.max(1, countSnippetLines(result.code));
     const langLabel = (currentSettings?.targetLanguage ?? 'c').toUpperCase();
     pushStatus(
-      `Translated line ${lineNumber} → ${producedLines} line${producedLines === 1 ? '' : 's'} (${langLabel}).`
+      `[${targetTab.title}] Translated line ${lineNumber} → ${producedLines} line${
+        producedLines === 1 ? '' : 's'
+      } (${langLabel}).`
+    );
+  } else if (result.kind === 'unhandled') {
+    highlightLine(targetTab.id, lineNumber, 'error');
+    showUnrecognizedPrompt(targetTab, lineNumber, englishInstruction, result.placeholder, result.message);
+    pushStatus(
+      `[${targetTab.title}] Line ${lineNumber} needs guidance — choose an action in the activity panel.`
     );
   } else {
-    highlightLine(lineNumber, 'error');
-    pushStatus(`Line ${lineNumber} failed: ${result.message}`);
+    highlightLine(targetTab.id, lineNumber, 'error');
+    pushStatus(`[${targetTab.title}] Line ${lineNumber} failed: ${result.message}`);
     showToast(result.message);
   }
 };
 
 editor.onDidChangeModelContent((event: monaco.editor.IModelContentChangedEvent) => {
+  const activeTab = getActiveTab();
+  if (activeTab && !activeTab.dirty) {
+    activeTab.dirty = true;
+    renderTabs();
+  }
+
   if (!autoTranslate) {
     return;
   }

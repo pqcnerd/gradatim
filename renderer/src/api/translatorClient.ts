@@ -2,6 +2,7 @@ import type { TranslateLinePayload, TranslateLineResponse } from '../types/elect
 
 export type TranslationResult =
   | { kind: 'ok'; code: string }
+  | { kind: 'unhandled'; placeholder: string; message?: string }
   | { kind: 'error'; message: string };
 
 export async function translateLine(payload: TranslateLinePayload): Promise<TranslationResult> {
@@ -16,6 +17,10 @@ export async function translateLine(payload: TranslateLinePayload): Promise<Tran
     const response: TranslateLineResponse = await window.electronAPI.translateLine(payload);
     if (response.kind === 'ok' && response.code) {
       return { kind: 'ok', code: response.code };
+    }
+
+    if (response.kind === 'unhandled' && response.code) {
+      return { kind: 'unhandled', placeholder: response.code, message: response.message ?? undefined };
     }
 
     return { kind: 'error', message: response.message ?? 'Unknown error' };

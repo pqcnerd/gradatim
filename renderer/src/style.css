@@ -21,27 +21,28 @@ body {
   min-height: 100vh;
 }
 
-.app-header {
-  padding: 1.2rem 2rem;
-  border-bottom: 1px solid #1f2533;
-  background-color: rgba(5, 5, 5, 0.6);
-  backdrop-filter: blur(6px);
+.top-bar {
+  height: 48px;
+  padding: 0 1rem;
+  border-bottom: 1px solid #1b202d;
+  background-color: #090d15;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
+  gap: 0.8rem;
 }
 
-.app-header h1 {
-  margin: 0 0 0.2rem;
-  font-size: 1.5rem;
+.workspace-label {
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8ab4ff;
 }
 
 .app-controls {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
@@ -49,7 +50,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #d1d6e3;
@@ -57,20 +58,12 @@ body {
 
 .app-controls button {
   border: 1px solid rgba(138, 180, 255, 0.6);
-.app-controls select {
-  border-radius: 4px;
-  border: 1px solid rgba(138, 180, 255, 0.35);
-  background: rgba(4, 7, 15, 0.8);
-  color: #f1f5ff;
-  padding: 0.2rem 0.4rem;
-  font-size: 0.85rem;
-}
   background: rgba(138, 180, 255, 0.1);
   color: #e4efff;
-  padding: 0.4rem 0.9rem;
+  padding: 0.3rem 0.75rem;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   transition: background 0.15s ease;
 }
 
@@ -78,16 +71,197 @@ body {
   background: rgba(138, 180, 255, 0.25);
 }
 
-.app-main {
-  display: grid;
-  grid-template-columns: 3fr 1fr;
+.app-controls select {
+  border-radius: 4px;
+  border: 1px solid rgba(138, 180, 255, 0.35);
+  background: rgba(4, 7, 15, 0.8);
+  color: #f1f5ff;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8rem;
+}
+
+.workspace {
   flex: 1;
-  gap: 0;
+  display: grid;
+  grid-template-columns: 240px 1fr 260px;
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid #1b202d;
+  background: #0b1019;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8ab4ff;
+  border-bottom: 1px solid #151a25;
+}
+
+.sidebar-action {
+  border: none;
+  background: transparent;
+  color: #8ab4ff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.file-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.tree-placeholder {
+  margin: 0;
+  color: #6f7892;
+  font-style: italic;
+}
+
+.tree-node {
+  list-style: none;
+  margin: 0;
+  padding: 0.15rem 0;
+}
+
+.tree-title {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: #cbd2e1;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.3rem;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tree-title:hover {
+  background: rgba(138, 180, 255, 0.1);
+}
+
+.tree-glyph {
+  font-size: 0.7rem;
+  color: #6f7892;
+}
+
+.tree-children {
+  margin: 0;
+  padding-left: 0.9rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tree-node.collapsed > .tree-children {
+  display: none;
+}
+
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tab-strip {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.6rem;
+  border-bottom: 1px solid #1b202d;
+  background: linear-gradient(180deg, #131723, #0d111a);
+}
+
+.tab-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  padding-right: 0.6rem;
+}
+
+.menu-link {
+  border: none;
+  background: transparent;
+  color: #b7bccb;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  border-radius: 3px;
+}
+
+.menu-link:hover {
+  background: rgba(138, 180, 255, 0.15);
+  color: #e1e5f2;
+}
+
+.tab-list {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.75rem;
+  border-radius: 4px 4px 0 0;
+  background: #0c1019;
+  color: #c7ccd8;
+  font-size: 0.85rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #151b29;
+  border-color: #28324a;
+  color: #f2f4f8;
+}
+
+.tab-title {
+  white-space: nowrap;
+}
+
+.tab-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.tab-add {
+  border: 1px dashed rgba(138, 180, 255, 0.5);
+  background: transparent;
+  color: #8ab4ff;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
 }
 
 .editor-panel {
-  padding: 0;
   position: relative;
+  flex: 1;
 }
 
 #editor {
@@ -125,6 +299,74 @@ body {
   border: 1px solid rgba(117, 141, 196, 0.2);
   border-radius: 6px;
   color: #dbe7ff;
+}
+
+.status-entry--prompt {
+  border-color: rgba(138, 180, 255, 0.45) !important;
+  background-color: rgba(20, 24, 38, 0.95) !important;
+}
+
+.prompt-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+  color: #f5f7ff;
+}
+
+.prompt-description {
+  font-size: 0.78rem;
+  color: #9ba6c3;
+  margin-bottom: 0.25rem;
+}
+
+.prompt-instruction {
+  font-size: 0.83rem;
+  font-style: italic;
+  color: #dbe7ff;
+  margin-bottom: 0.4rem;
+}
+
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.prompt-actions button {
+  border-radius: 4px;
+  border: 1px solid rgba(138, 180, 255, 0.4);
+  background: rgba(138, 180, 255, 0.12);
+  color: #e4efff;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.prompt-actions button:hover {
+  background: rgba(138, 180, 255, 0.25);
+}
+
+.prompt-actions--inline {
+  justify-content: flex-start;
+}
+
+.prompt-manual {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.prompt-manual textarea {
+  width: 100%;
+  min-height: 90px;
+  border-radius: 6px;
+  border: 1px solid rgba(138, 180, 255, 0.35);
+  background: #0c111b;
+  color: #f5f5ff;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  padding: 0.4rem;
+  resize: vertical;
 }
 
 .line-commit-decoration {

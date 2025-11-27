@@ -1,5 +1,21 @@
 use anyhow::{anyhow, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArithmeticOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+#[derive(Debug, Clone)]
+struct ArithmeticInstruction {
+    op: ArithmeticOp,
+    left: String,
+    right: String,
+    target: Option<String>,
+}
+
 use crate::models::TranslateLineRequest;
 
 pub fn translate_line(request: &TranslateLineRequest) -> Result<String> {
@@ -26,6 +42,10 @@ fn translate_c(request: &TranslateLineRequest) -> Result<String> {
 
     if let Some(rest) = strip_keyword(line, "set") {
         return handle_assignment(rest);
+    }
+
+    if let Some(arith) = parse_arithmetic_instruction(line) {
+        return build_c_arithmetic(&arith);
     }
 
     if let Some(rest) = strip_keyword(line, "increment") {
@@ -115,6 +135,10 @@ fn translate_python(request: &TranslateLineRequest) -> Result<String> {
 
     if let Some(rest) = strip_keyword(line, "return") {
         return Ok(format!("return {}", rest.trim()));
+    }
+
+    if let Some(arith) = parse_arithmetic_instruction(line) {
+        return build_python_arithmetic(&arith);
     }
 
     if let Some(rest) = strip_keyword(line, "if") {
@@ -486,6 +510,171 @@ fn split_range_and_action(segment: &str) -> (String, Option<String>) {
         }
     }
     (segment.trim().to_string(), None)
+}
+
+fn parse_arithmetic_instruction(line: &str) -> Option<ArithmeticInstruction> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = strip_keyword(trimmed, "add") {
+        return parse_add_mul(rest, ArithmeticOp::Add, true);
+    }
+
+    if let Some(rest) = strip_keyword(trimmed, "multiply") {
+        return parse_add_mul(rest, ArithmeticOp::Multiply, true);
+    }
+
+    if let Some(rest) = strip_keyword(trimmed, "divide") {
+        return parse_divide(rest);
+    }
+
+    if let Some(rest) = strip_keyword(trimmed, "subtract") {
+        return parse_subtract(rest);
+    }
+
+    None
+}
+
+fn parse_add_mul(remainder: &str, op: ArithmeticOp, allow_and: bool) -> Option<ArithmeticInstruction> {
+    let lower = remainder.to_lowercase();
+
+    if allow_and {
+        if let Some(idx) = lower.find(" and ") {
+            let left = remainder[..idx].trim();
+            let after = remainder[idx + 5..].trim();
+            let (right, target) = split_operand_and_target(after);
+            if left.is_empty() || right.is_empty() {
+                return None;
+            }
+            return Some(ArithmeticInstruction {
+                op,
+                left: left.to_string(),
+                right,
+                target,
+            });
+        }
+    }
+
+    if op == ArithmeticOp::Multiply || op == ArithmeticOp::Divide {
+        if let Some(idx) = lower.find(" by ") {
+            let left = remainder[..idx].trim();
+            let after = remainder[idx + 4..].trim();
+            let (right, target) = split_operand_and_target(after);
+            if left.is_empty() || right.is_empty() {
+                return None;
+            }
+            return Some(ArithmeticInstruction {
+                op,
+                left: left.to_string(),
+                right,
+                target,
+            });
+        }
+    }
+
+    None
+}
+
+fn parse_divide(remainder: &str) -> Option<ArithmeticInstruction> {
+    parse_add_mul(remainder, ArithmeticOp::Divide, true)
+}
+
+fn parse_subtract(remainder: &str) -> Option<ArithmeticInstruction> {
+    let lower = remainder.to_lowercase();
+    if let Some(idx) = lower.find(" from ") {
+        let subtrahend = remainder[..idx].trim();
+        let after = remainder[idx + 6..].trim();
+        let (minuend, target) = split_operand_and_target(after);
+        if subtrahend.is_empty() || minuend.is_empty() {
+            return None;
+        }
+        return Some(ArithmeticInstruction {
+            op: ArithmeticOp::Subtract,
+            left: minuend,
+            right: subtrahend.to_string(),
+            target,
+        });
+    }
+
+    if let Some(instr) = parse_add_mul(remainder, ArithmeticOp::Subtract, true) {
+        return Some(instr);
+    }
+
+    None
+}
+
+fn split_operand_and_target(segment: &str) -> (String, Option<String>) {
+    let trimmed = segment.trim();
+    if trimmed.is_empty() {
+        return (String::new(), None);
+    }
+    let lower = trimmed.to_lowercase();
+    for key in [" into ", " to ", " store in ", " store into ", " as "] {
+        if let Some(idx) = lower.find(key) {
+            let value = trimmed[..idx].trim().to_string();
+            let target = trimmed[idx + key.len()..].trim();
+            if !target.is_empty() {
+                return (value, Some(target.to_string()));
+            }
+        }
+    }
+    (trimmed.to_string(), None)
+}
+
+fn build_c_arithmetic(instr: &ArithmeticInstruction) -> Result<String> {
+    let op_symbol = match instr.op {
+        ArithmeticOp::Add => "+",
+        ArithmeticOp::Subtract => "-",
+        ArithmeticOp::Multiply => "*",
+        ArithmeticOp::Divide => "/",
+    };
+
+    let expression = format!("{} {} {}", instr.left.trim(), op_symbol, instr.right.trim());
+
+    if let Some(target_raw) = instr.target.as_ref() {
+        let target = sanitize_identifier(target_raw);
+        if !target.is_empty() {
+            return Ok(format!("{target} = {expression};"));
+        }
+    }
+
+    let default_name = match instr.op {
+        ArithmeticOp::Add => "sum",
+        ArithmeticOp::Subtract => "difference",
+        ArithmeticOp::Multiply => "product",
+        ArithmeticOp::Divide => "quotient",
+    };
+
+    Ok(format!("int {default_name} = {expression};"))
+}
+
+fn build_python_arithmetic(instr: &ArithmeticInstruction) -> Result<String> {
+    let op_symbol = match instr.op {
+        ArithmeticOp::Add => "+",
+        ArithmeticOp::Subtract => "-",
+        ArithmeticOp::Multiply => "*",
+        ArithmeticOp::Divide => "/",
+    };
+
+    let expression = format!("{} {} {}", instr.left.trim(), op_symbol, instr.right.trim());
+
+    if let Some(target_raw) = instr.target.as_ref() {
+        let target = sanitize_identifier(target_raw);
+        if !target.is_empty() {
+            return Ok(format!("{target} = {expression}"));
+        }
+    }
+
+    let default_name = match instr.op {
+        ArithmeticOp::Add => "sum_result",
+        ArithmeticOp::Subtract => "difference_result",
+        ArithmeticOp::Multiply => "product_result",
+        ArithmeticOp::Divide => "quotient_result",
+    };
+
+    Ok(format!("{default_name} = {expression}"))
 }
 
 fn clean_action_segment(action: &str) -> String {
