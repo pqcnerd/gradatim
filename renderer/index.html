@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gradatim Editor</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <div>
+          <h1>Gradatim Prototype</h1>
+          <p>Type English instructions line-by-line. Press Enter or Ctrl+Enter to queue a translation.</p>
+        </div>
+        <div class="app-controls">
+          <label class="control">
+            Target
+            <select id="language-select">
+              <option value="c">C</option>
+              <option value="python">Python</option>
+            </select>
+          </label>
+          <label class="control">
+            <input type="checkbox" id="auto-toggle" checked />
+            Auto on Enter
+          </label>
+          <button type="button" id="regenerate-btn">Regenerate line</button>
+          <button type="button" id="open-settings">Settings</button>
+        </div>
+      </header>
+      <main class="app-main">
+        <section class="editor-panel">
+          <div id="editor"></div>
+        </section>
+        <aside class="status-panel">
+          <h2>Line activity</h2>
+          <ul id="status-log"></ul>
+        </aside>
+      </main>
+    </div>
+    <div id="settings-modal" class="modal" aria-hidden="true">
+      <div class="modal-content">
+        <header>
+          <h2>Settings</h2>
+        </header>
+        <form id="settings-form">
+          <label>
+            Rust core URL
+            <input type="text" name="rustCoreUrl" />
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" name="autoTranslate" />
+            Enable auto-translate by default
+          </label>
+          <label>
+            Context window (characters before line)
+            <input type="number" name="beforeChars" min="200" max="5000" step="50" />
+          </label>
+          <label>
+            Context window (characters after line)
+            <input type="number" name="afterChars" min="100" max="3000" step="50" />
+          </label>
+          <label>
+            Target language
+            <select name="targetLanguage">
+              <option value="c">C</option>
+              <option value="python">Python</option>
+            </select>
+          </label>
+          <label>
+            Max lines per translation
+            <select name="maxLines">
+              <option value="1">1 line</option>
+              <option value="2">2 lines</option>
+              <option value="3">3 lines</option>
+            </select>
+          </label>
+          <label>
+            Gemini model name
+            <input type="text" name="aiModel" />
+          </label>
+          <label>
+            Gemini API key
+            <input type="password" name="aiApiKey" autocomplete="off" />
+          </label>
+          <footer class="modal-actions">
+            <button type="button" id="close-settings">Cancel</button>
+            <button type="submit">Save</button>
+          </footer>
+        </form>
+      </div>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+

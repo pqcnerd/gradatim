@@ -1,0 +1,26 @@
+# Node / build artifacts
+node_modules/
+dist/
+out/
+*.log
+release/
+*.tsbuildinfo
+
+# Vite artifacts
+renderer/dist/
+
+# Rust artifacts
+rust-core/target/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+
+# Local config / secrets
+.env
+gradatim-settings.json
+

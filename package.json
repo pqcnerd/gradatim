@@ -1,0 +1,33 @@
+{
+  "name": "gradatim-editor",
+  "version": "0.1.0",
+  "description": "Line-by-line natural language to C code Electron editor.",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:all": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\" \"npm:dev:rust\"",
+    "dev:renderer": "cd renderer && vite dev --host 127.0.0.1 --port 5173",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && electron .",
+    "dev:rust": "cd rust-core && powershell -ExecutionPolicy Bypass -File build.ps1 run",
+    "build": "npm run build:renderer",
+    "build:renderer": "cd renderer && vite build",
+    "package": "npm run build && electron-builder --config electron-builder.yml",
+    "lint": "echo \"No lint configured yet\"",
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "dependencies": {
+    "electron": "^31.3.0",
+    "monaco-editor": "^0.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "concurrently": "^9.0.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.8",
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "wait-on": "^8.0.1"
+  }
+}
+
