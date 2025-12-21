@@ -1627,6 +1627,163 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok("int main(void) {\n    return 0;\n}".to_string())
         }
 
+        // New hint types
+        StatementHint::Switch { expression } => {
+            Ok(format!("switch ({}) {{\n\n}}", expression))
+        }
+
+        StatementHint::Case { value, action } => {
+            if let Some(act) = action {
+                Ok(format!("case {}:\n    {};\n    break;", value, act))
+            } else {
+                Ok(format!("case {}:", value))
+            }
+        }
+
+        StatementHint::Default { action } => {
+            if let Some(act) = action {
+                Ok(format!("default:\n    {};\n    break;", act))
+            } else {
+                Ok("default:".to_string())
+            }
+        }
+
+        StatementHint::DoWhileStart => {
+            Ok("do {".to_string())
+        }
+
+        StatementHint::DoWhileEnd { condition } => {
+            Ok(format!("}} while ({});", condition))
+        }
+
+        StatementHint::Break => {
+            Ok("break;".to_string())
+        }
+
+        StatementHint::Continue => {
+            Ok("continue;".to_string())
+        }
+
+        StatementHint::FunctionCall { name, arguments } => {
+            if arguments.is_empty() {
+                Ok(format!("{}();", name))
+            } else {
+                Ok(format!("{}({});", name, arguments.join(", ")))
+            }
+        }
+
+        StatementHint::Include { header, is_system } => {
+            if *is_system {
+                Ok(format!("#include <{}>", header))
+            } else {
+                Ok(format!("#include \"{}\"", header))
+            }
+        }
+
+        StatementHint::Define { name, value } => {
+            Ok(format!("#define {} {}", name, value))
+        }
+
+        StatementHint::PointerDecl { base_type, name } => {
+            Ok(format!("{} *{};", base_type, name))
+        }
+
+        StatementHint::Dereference { target } => {
+            Ok(format!("*{}", target))
+        }
+
+        StatementHint::AddressOf { target } => {
+            Ok(format!("&{}", target))
+        }
+
+        StatementHint::Malloc { count, element_type } => {
+            let c_type = match element_type.to_lowercase().as_str() {
+                "int" | "integer" => "int",
+                "float" => "float",
+                "double" => "double",
+                "char" => "char",
+                _ => "int",
+            };
+            Ok(format!("malloc({} * sizeof({}))", count, c_type))
+        }
+
+        StatementHint::Free { target } => {
+            Ok(format!("free({});", target))
+        }
+
+        StatementHint::EnumDef { name, values } => {
+            if values.is_empty() {
+                Ok(format!("enum {} {{\n\n}};", name))
+            } else {
+                Ok(format!("enum {} {{ {} }};", name, values.join(", ")))
+            }
+        }
+
+        StatementHint::Typedef { original_type, new_name } => {
+            Ok(format!("typedef {} {};", original_type, new_name))
+        }
+
+        StatementHint::StringDecl { name, initial_value, size } => {
+            if let Some(val) = initial_value {
+                Ok(format!("char {}[] = \"{}\";", name, val))
+            } else if let Some(sz) = size {
+                Ok(format!("char {}[{}];", name, sz))
+            } else {
+                Ok(format!("char {}[256];", name))
+            }
+        }
+
+        StatementHint::Comment { text, is_block } => {
+            if *is_block {
+                Ok("/*".to_string())
+            } else {
+                Ok(format!("// {}", text))
+            }
+        }
+
+        StatementHint::Bitwise { operation, left, right, target } => {
+            let op = match operation {
+                crate::hints::BitwiseOp::And => "&",
+                crate::hints::BitwiseOp::Or => "|",
+                crate::hints::BitwiseOp::Xor => "^",
+                crate::hints::BitwiseOp::Not => "~",
+                crate::hints::BitwiseOp::ShiftLeft => "<<",
+                crate::hints::BitwiseOp::ShiftRight => ">>",
+            };
+            
+            let expr = if let Some(r) = right {
+                format!("{} {} {}", left, op, r)
+            } else {
+                format!("{}{}", op, left)
+            };
+            
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+
+        StatementHint::Cast { expression, target_type } => {
+            Ok(format!("({}){}", target_type, expression))
+        }
+
+        StatementHint::ArrayAccess { array, index, value } => {
+            if let Some(val) = value {
+                Ok(format!("{}[{}] = {};", array, index, val))
+            } else {
+                Ok(format!("{}[{}]", array, index))
+            }
+        }
+
+        StatementHint::SizeOf { target } => {
+            Ok(format!("sizeof({})", target))
+        }
+
+        StatementHint::Ternary { condition, true_value, false_value } => {
+            Ok(format!("{} ? {} : {}", condition, true_value, false_value))
+        }
+
         StatementHint::Unknown { original } => {
             Err(anyhow!("UNHANDLED: {}", original))
         }
@@ -1839,6 +1996,175 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
 
         StatementHint::MainFunction => {
             Ok("def main():\n    pass\n\nif __name__ == \"__main__\":\n    main()".to_string())
+        }
+
+        // New hint types for Python
+        StatementHint::Switch { expression } => {
+            // Python 3.10+ has match/case
+            Ok(format!("match {}:\n    case _:\n        pass", expression))
+        }
+
+        StatementHint::Case { value, action } => {
+            if let Some(act) = action {
+                Ok(format!("case {}:\n    {}", value, act))
+            } else {
+                Ok(format!("case {}:\n    pass", value))
+            }
+        }
+
+        StatementHint::Default { action } => {
+            if let Some(act) = action {
+                Ok(format!("case _:\n    {}", act))
+            } else {
+                Ok("case _:\n    pass".to_string())
+            }
+        }
+
+        StatementHint::DoWhileStart => {
+            Ok("while True:  # do-while start".to_string())
+        }
+
+        StatementHint::DoWhileEnd { condition } => {
+            Ok(format!("    if not ({}):\n        break", condition))
+        }
+
+        StatementHint::Break => {
+            Ok("break".to_string())
+        }
+
+        StatementHint::Continue => {
+            Ok("continue".to_string())
+        }
+
+        StatementHint::FunctionCall { name, arguments } => {
+            if arguments.is_empty() {
+                Ok(format!("{}()", name))
+            } else {
+                Ok(format!("{}({})", name, arguments.join(", ")))
+            }
+        }
+
+        StatementHint::Include { header, is_system: _ } => {
+            // Map C headers to Python imports
+            let py_import = match header.trim_end_matches(".h").to_lowercase().as_str() {
+                "stdio" => "import sys",
+                "stdlib" => "import os",
+                "string" => "# string operations built-in",
+                "math" => "import math",
+                "time" => "import time",
+                _ => &format!("# include {} (no Python equivalent)", header),
+            };
+            Ok(py_import.to_string())
+        }
+
+        StatementHint::Define { name, value } => {
+            Ok(format!("{} = {}", name, value))
+        }
+
+        StatementHint::PointerDecl { base_type: _, name } => {
+            // Python doesn't have pointers
+            Ok(format!("{} = None  # pointer", name))
+        }
+
+        StatementHint::Dereference { target } => {
+            Ok(target.to_string())  // Python doesn't dereference
+        }
+
+        StatementHint::AddressOf { target } => {
+            Ok(format!("id({})", target))
+        }
+
+        StatementHint::Malloc { count, element_type: _ } => {
+            Ok(format!("[None] * {}", count))
+        }
+
+        StatementHint::Free { target: _ } => {
+            Ok("# memory managed automatically".to_string())
+        }
+
+        StatementHint::EnumDef { name, values } => {
+            let mut lines = vec![
+                "from enum import Enum".to_string(),
+                format!("class {}(Enum):", name),
+            ];
+            for (i, val) in values.iter().enumerate() {
+                lines.push(format!("    {} = {}", val, i));
+            }
+            if values.is_empty() {
+                lines.push("    pass".to_string());
+            }
+            Ok(lines.join("\n"))
+        }
+
+        StatementHint::Typedef { original_type: _, new_name } => {
+            // Python uses duck typing, typedef is essentially an alias
+            Ok(format!("{} = type  # typedef alias", new_name))
+        }
+
+        StatementHint::StringDecl { name, initial_value, size: _ } => {
+            if let Some(val) = initial_value {
+                Ok(format!("{} = \"{}\"", name, val))
+            } else {
+                Ok(format!("{} = \"\"", name))
+            }
+        }
+
+        StatementHint::Comment { text, is_block } => {
+            if *is_block {
+                Ok("\"\"\"".to_string())
+            } else {
+                Ok(format!("# {}", text))
+            }
+        }
+
+        StatementHint::Bitwise { operation, left, right, target } => {
+            let op = match operation {
+                crate::hints::BitwiseOp::And => "&",
+                crate::hints::BitwiseOp::Or => "|",
+                crate::hints::BitwiseOp::Xor => "^",
+                crate::hints::BitwiseOp::Not => "~",
+                crate::hints::BitwiseOp::ShiftLeft => "<<",
+                crate::hints::BitwiseOp::ShiftRight => ">>",
+            };
+            
+            let expr = if let Some(r) = right {
+                format!("{} {} {}", left, op, r)
+            } else {
+                format!("{}{}", op, left)
+            };
+            
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+
+        StatementHint::Cast { expression, target_type } => {
+            let py_type = match target_type.to_lowercase().as_str() {
+                "int" | "integer" => "int",
+                "float" | "double" => "float",
+                "char" | "string" => "str",
+                "bool" | "boolean" => "bool",
+                _ => target_type,
+            };
+            Ok(format!("{}({})", py_type, expression))
+        }
+
+        StatementHint::ArrayAccess { array, index, value } => {
+            if let Some(val) = value {
+                Ok(format!("{}[{}] = {}", array, index, val))
+            } else {
+                Ok(format!("{}[{}]", array, index))
+            }
+        }
+
+        StatementHint::SizeOf { target } => {
+            Ok(format!("len({})", target))
+        }
+
+        StatementHint::Ternary { condition, true_value, false_value } => {
+            Ok(format!("{} if {} else {}", true_value, condition, false_value))
         }
 
         StatementHint::Unknown { original } => {

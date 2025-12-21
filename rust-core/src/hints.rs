@@ -104,10 +104,155 @@ pub enum StatementHint {
     /// Main entry point: "create main", "entry point"
     MainFunction,
 
+    /// Switch statement: "switch a"
+    Switch {
+        expression: String,
+    },
+
+    /// Case in switch: "case 1", "case 2 do X"
+    Case {
+        value: String,
+        action: Option<String>,
+    },
+
+    /// Default case: "default", "default do X"
+    Default {
+        action: Option<String>,
+    },
+
+    /// Do-while loop start: "do"
+    DoWhileStart,
+
+    /// Do-while loop end: "end do while condition"
+    DoWhileEnd {
+        condition: String,
+    },
+
+    /// Break statement: "break", "break out"
+    Break,
+
+    /// Continue statement: "continue", "skip iteration"
+    Continue,
+
+    /// Function call: "call foo with x, y"
+    FunctionCall {
+        name: String,
+        arguments: Vec<String>,
+    },
+
+    /// Include directive: "include stdio"
+    Include {
+        header: String,
+        is_system: bool,
+    },
+
+    /// Define macro: "define MAX 100"
+    Define {
+        name: String,
+        value: String,
+    },
+
+    /// Pointer declaration: "pointer to int x"
+    PointerDecl {
+        base_type: String,
+        name: String,
+    },
+
+    /// Dereference: "dereference p"
+    Dereference {
+        target: String,
+    },
+
+    /// Address of: "address of x"
+    AddressOf {
+        target: String,
+    },
+
+    /// Malloc: "allocate n integers"
+    Malloc {
+        count: String,
+        element_type: String,
+    },
+
+    /// Free: "free p"
+    Free {
+        target: String,
+    },
+
+    /// Enum definition: "enum Color with red, green, blue"
+    EnumDef {
+        name: String,
+        values: Vec<String>,
+    },
+
+    /// Typedef: "typedef int Number"
+    Typedef {
+        original_type: String,
+        new_name: String,
+    },
+
+    /// String declaration: "string s equals hello"
+    StringDecl {
+        name: String,
+        initial_value: Option<String>,
+        size: Option<String>,
+    },
+
+    /// Comment: "comment this does X"
+    Comment {
+        text: String,
+        is_block: bool,
+    },
+
+    /// Bitwise operation: "x bitwise and y"
+    Bitwise {
+        operation: BitwiseOp,
+        left: String,
+        right: Option<String>,
+        target: Option<String>,
+    },
+
+    /// Type cast: "cast x to int"
+    Cast {
+        expression: String,
+        target_type: String,
+    },
+
+    /// Array access: "get a at i", "set a at 0 to 5"
+    ArrayAccess {
+        array: String,
+        index: String,
+        value: Option<String>, // None for read, Some for write
+    },
+
+    /// Sizeof: "size of a"
+    SizeOf {
+        target: String,
+    },
+
+    /// Ternary: "if x then y else z" (inline)
+    Ternary {
+        condition: String,
+        true_value: String,
+        false_value: String,
+    },
+
     /// Unknown - AI handles without specific hints
     Unknown {
         original: String,
     },
+}
+
+/// Bitwise operation types.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BitwiseOp {
+    And,
+    Or,
+    Xor,
+    Not,
+    ShiftLeft,
+    ShiftRight,
 }
 
 /// Arithmetic operation types.
@@ -144,6 +289,37 @@ impl StatementHint {
             StatementHint::While { .. } => true,
             // Simple loops (rule-based generates complete blocks with braces)
             StatementHint::Loop { .. } => true,
+            // New control flow
+            StatementHint::Switch { .. } => true,
+            StatementHint::Case { .. } => true,
+            StatementHint::Default { .. } => true,
+            StatementHint::DoWhileStart => true,
+            StatementHint::DoWhileEnd { .. } => true,
+            StatementHint::Break => true,
+            StatementHint::Continue => true,
+            // Function calls
+            StatementHint::FunctionCall { .. } => true,
+            // Preprocessor
+            StatementHint::Include { .. } => true,
+            StatementHint::Define { .. } => true,
+            // Pointers and memory
+            StatementHint::PointerDecl { .. } => true,
+            StatementHint::Dereference { .. } => true,
+            StatementHint::AddressOf { .. } => true,
+            StatementHint::Malloc { .. } => true,
+            StatementHint::Free { .. } => true,
+            // Types
+            StatementHint::EnumDef { .. } => true,
+            StatementHint::Typedef { .. } => true,
+            StatementHint::StringDecl { .. } => true,
+            // Comments
+            StatementHint::Comment { .. } => true,
+            // Operations
+            StatementHint::Bitwise { .. } => true,
+            StatementHint::Cast { .. } => true,
+            StatementHint::ArrayAccess { .. } => true,
+            StatementHint::SizeOf { .. } => true,
+            StatementHint::Ternary { .. } => true,
             // Everything else goes to AI
             _ => false,
         }
@@ -327,6 +503,134 @@ impl StatementHint {
                 format!("- Intent: Read input\n- Variables: {}", variables.join(", "))
             }
 
+            StatementHint::Switch { expression } => {
+                format!("- Intent: Switch statement\n- Expression: {}", expression)
+            }
+
+            StatementHint::Case { value, action } => {
+                let mut s = format!("- Intent: Case\n- Value: {}", value);
+                if let Some(a) = action {
+                    s.push_str(&format!("\n- Action: {}", a));
+                }
+                s
+            }
+
+            StatementHint::Default { action } => {
+                let mut s = "- Intent: Default case".to_string();
+                if let Some(a) = action {
+                    s.push_str(&format!("\n- Action: {}", a));
+                }
+                s
+            }
+
+            StatementHint::DoWhileStart => "- Intent: Do-while loop start".to_string(),
+
+            StatementHint::DoWhileEnd { condition } => {
+                format!("- Intent: Do-while loop end\n- Condition: {}", condition)
+            }
+
+            StatementHint::Break => "- Intent: Break statement".to_string(),
+
+            StatementHint::Continue => "- Intent: Continue statement".to_string(),
+
+            StatementHint::FunctionCall { name, arguments } => {
+                if arguments.is_empty() {
+                    format!("- Intent: Function call\n- Name: {}", name)
+                } else {
+                    format!("- Intent: Function call\n- Name: {}\n- Arguments: {}", name, arguments.join(", "))
+                }
+            }
+
+            StatementHint::Include { header, is_system } => {
+                format!("- Intent: Include\n- Header: {}\n- System header: {}", header, is_system)
+            }
+
+            StatementHint::Define { name, value } => {
+                format!("- Intent: Define macro\n- Name: {}\n- Value: {}", name, value)
+            }
+
+            StatementHint::PointerDecl { base_type, name } => {
+                format!("- Intent: Pointer declaration\n- Type: {} *\n- Name: {}", base_type, name)
+            }
+
+            StatementHint::Dereference { target } => {
+                format!("- Intent: Dereference\n- Target: {}", target)
+            }
+
+            StatementHint::AddressOf { target } => {
+                format!("- Intent: Address of\n- Target: {}", target)
+            }
+
+            StatementHint::Malloc { count, element_type } => {
+                format!("- Intent: Allocate memory\n- Count: {}\n- Type: {}", count, element_type)
+            }
+
+            StatementHint::Free { target } => {
+                format!("- Intent: Free memory\n- Target: {}", target)
+            }
+
+            StatementHint::EnumDef { name, values } => {
+                format!("- Intent: Enum definition\n- Name: {}\n- Values: {}", name, values.join(", "))
+            }
+
+            StatementHint::Typedef { original_type, new_name } => {
+                format!("- Intent: Typedef\n- Original: {}\n- New name: {}", original_type, new_name)
+            }
+
+            StatementHint::StringDecl { name, initial_value, size } => {
+                let mut s = format!("- Intent: String declaration\n- Name: {}", name);
+                if let Some(v) = initial_value {
+                    s.push_str(&format!("\n- Initial value: {}", v));
+                }
+                if let Some(sz) = size {
+                    s.push_str(&format!("\n- Size: {}", sz));
+                }
+                s
+            }
+
+            StatementHint::Comment { text, is_block } => {
+                format!("- Intent: Comment\n- Text: {}\n- Block: {}", text, is_block)
+            }
+
+            StatementHint::Bitwise { operation, left, right, target } => {
+                let op_str = match operation {
+                    BitwiseOp::And => "AND",
+                    BitwiseOp::Or => "OR",
+                    BitwiseOp::Xor => "XOR",
+                    BitwiseOp::Not => "NOT",
+                    BitwiseOp::ShiftLeft => "Shift Left",
+                    BitwiseOp::ShiftRight => "Shift Right",
+                };
+                let mut s = format!("- Intent: Bitwise {}\n- Left: {}", op_str, left);
+                if let Some(r) = right {
+                    s.push_str(&format!("\n- Right: {}", r));
+                }
+                if let Some(t) = target {
+                    s.push_str(&format!("\n- Store in: {}", t));
+                }
+                s
+            }
+
+            StatementHint::Cast { expression, target_type } => {
+                format!("- Intent: Type cast\n- Expression: {}\n- To type: {}", expression, target_type)
+            }
+
+            StatementHint::ArrayAccess { array, index, value } => {
+                let mut s = format!("- Intent: Array access\n- Array: {}\n- Index: {}", array, index);
+                if let Some(v) = value {
+                    s.push_str(&format!("\n- Set value: {}", v));
+                }
+                s
+            }
+
+            StatementHint::SizeOf { target } => {
+                format!("- Intent: Size of\n- Target: {}", target)
+            }
+
+            StatementHint::Ternary { condition, true_value, false_value } => {
+                format!("- Intent: Ternary\n- Condition: {}\n- True: {}\n- False: {}", condition, true_value, false_value)
+            }
+
             StatementHint::Unknown { original } => {
                 format!("- Intent: Unknown (AI should interpret)\n- Original: \"{}\"", original)
             }
@@ -443,6 +747,83 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_struct(line) {
+        return hint;
+    }
+
+    // New extractors
+    if let Some(hint) = try_extract_switch(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_case(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_default(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_do_while(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_break_continue(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_function_call(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_include(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_define(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_pointer(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_memory_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_enum(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_typedef(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_string_decl(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_comment(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_bitwise(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_cast(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_array_access(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_sizeof(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_ternary(line) {
         return hint;
     }
 
@@ -1259,6 +1640,508 @@ fn normalize_condition(condition: &str) -> String {
         .replace(" is not equal to ", " != ")
         .replace(" is not ", " != ")
         .replace(" is ", " == ")
+}
+
+// ============================================================================
+// New Extractors
+// ============================================================================
+
+fn try_extract_switch(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "switch")?;
+    let expression = rest.trim().to_string();
+    if expression.is_empty() {
+        return None;
+    }
+    Some(StatementHint::Switch { expression })
+}
+
+fn try_extract_case(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "case")?;
+    let lower = rest.to_lowercase();
+    
+    // Check for "do" action
+    let (value_part, action) = if let Some(idx) = lower.find(" do ") {
+        (&rest[..idx], Some(rest[idx + 4..].trim().to_string()))
+    } else {
+        (rest, None)
+    };
+    
+    let value = value_part.trim().to_string();
+    if value.is_empty() {
+        return None;
+    }
+    
+    Some(StatementHint::Case { value, action })
+}
+
+fn try_extract_default(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    if !lower.starts_with("default") {
+        return None;
+    }
+    
+    let rest = &line.trim()[7..]; // Skip "default"
+    let action = if rest.is_empty() {
+        None
+    } else if rest.to_lowercase().starts_with(" do ") {
+        Some(rest[4..].trim().to_string())
+    } else {
+        None
+    };
+    
+    Some(StatementHint::Default { action })
+}
+
+fn try_extract_do_while(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "do" alone starts a do-while
+    if lower == "do" {
+        return Some(StatementHint::DoWhileStart);
+    }
+    
+    // "end do while condition" ends it
+    if lower.starts_with("end do while ") {
+        let condition = normalize_condition(&line.trim()[13..]);
+        return Some(StatementHint::DoWhileEnd { condition });
+    }
+    
+    None
+}
+
+fn try_extract_break_continue(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    if lower == "break" || lower == "break out" || lower.starts_with("break out of") {
+        return Some(StatementHint::Break);
+    }
+    
+    if lower == "continue" || lower == "skip iteration" || lower == "next iteration" {
+        return Some(StatementHint::Continue);
+    }
+    
+    None
+}
+
+fn try_extract_function_call(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "call")?;
+    
+    let lower = rest.to_lowercase();
+    let (name_part, args_part) = if let Some(idx) = lower.find(" with ") {
+        (&rest[..idx], Some(&rest[idx + 6..]))
+    } else {
+        (rest, None)
+    };
+    
+    let name = sanitize_identifier(name_part.trim());
+    if name.is_empty() {
+        return None;
+    }
+    
+    let arguments = if let Some(args) = args_part {
+        args.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    
+    Some(StatementHint::FunctionCall { name, arguments })
+}
+
+fn try_extract_include(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "include")?;
+    let header = rest.trim();
+    
+    if header.is_empty() {
+        return None;
+    }
+    
+    // Check if user specified quotes (local include)
+    let (header, is_system) = if header.starts_with('"') && header.ends_with('"') {
+        (header[1..header.len()-1].to_string(), false)
+    } else {
+        // Map common header names
+        let mapped = match header.to_lowercase().as_str() {
+            "stdio" => "stdio.h",
+            "stdlib" => "stdlib.h",
+            "string" => "string.h",
+            "math" => "math.h",
+            "stdbool" => "stdbool.h",
+            "stdint" => "stdint.h",
+            "ctype" => "ctype.h",
+            "time" => "time.h",
+            "assert" => "assert.h",
+            _ => header,
+        };
+        (mapped.to_string(), true)
+    };
+    
+    Some(StatementHint::Include { header, is_system })
+}
+
+fn try_extract_define(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "define")?;
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    
+    if tokens.len() < 2 {
+        return None;
+    }
+    
+    let name = tokens[0].to_string();
+    let value = tokens[1..].join(" ");
+    
+    Some(StatementHint::Define { name, value })
+}
+
+fn try_extract_pointer(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "pointer to int x" or "int pointer x"
+    if let Some(rest) = strip_keyword(line, "pointer to") {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            let base_type = tokens[0].to_string();
+            let name = sanitize_identifier(tokens[1]);
+            if !name.is_empty() {
+                return Some(StatementHint::PointerDecl { base_type, name });
+            }
+        }
+    }
+    
+    // "int pointer p" pattern
+    for ty in ["int", "float", "double", "char", "void"] {
+        if lower.starts_with(&format!("{} pointer ", ty)) {
+            let rest = &line.trim()[ty.len() + 9..];
+            let name = sanitize_identifier(rest.split_whitespace().next().unwrap_or(""));
+            if !name.is_empty() {
+                return Some(StatementHint::PointerDecl { base_type: ty.to_string(), name });
+            }
+        }
+    }
+    
+    // "dereference p"
+    if let Some(rest) = strip_keyword(line, "dereference") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::Dereference { target });
+        }
+    }
+    
+    // "address of x"
+    if let Some(rest) = strip_keyword(line, "address of") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::AddressOf { target });
+        }
+    }
+    
+    None
+}
+
+fn try_extract_memory_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "free p"
+    if let Some(rest) = strip_keyword(line, "free") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::Free { target });
+        }
+    }
+    
+    // "allocate n integers" or "allocate memory for x"
+    if let Some(rest) = strip_keyword(line, "allocate") {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            let count = tokens[0].to_string();
+            let element_type = tokens[1].trim_end_matches('s').to_string(); // "integers" -> "integer"
+            return Some(StatementHint::Malloc { count, element_type });
+        }
+    }
+    
+    // "malloc n integers"
+    if let Some(rest) = strip_keyword(line, "malloc") {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let count = tokens[0].to_string();
+            let element_type = if tokens.len() > 1 { tokens[1].to_string() } else { "int".to_string() };
+            return Some(StatementHint::Malloc { count, element_type });
+        }
+    }
+    
+    None
+}
+
+fn try_extract_enum(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "enum")?;
+    
+    let lower = rest.to_lowercase();
+    let (name_part, values_part) = if let Some(idx) = lower.find(" with ") {
+        (&rest[..idx], Some(&rest[idx + 6..]))
+    } else {
+        (rest, None)
+    };
+    
+    let name = sanitize_identifier(name_part.trim());
+    if name.is_empty() {
+        return None;
+    }
+    
+    let values: Vec<String> = if let Some(vals) = values_part {
+        vals.split(',')
+            .flat_map(|s| s.split(" and "))
+            .map(|s| sanitize_identifier(s.trim()))
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    
+    Some(StatementHint::EnumDef { name, values })
+}
+
+fn try_extract_typedef(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "typedef")?;
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    
+    if tokens.len() < 2 {
+        return None;
+    }
+    
+    let original_type = tokens[0].to_string();
+    let new_name = sanitize_identifier(tokens[1]);
+    
+    if new_name.is_empty() {
+        return None;
+    }
+    
+    Some(StatementHint::Typedef { original_type, new_name })
+}
+
+fn try_extract_string_decl(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "string")?;
+    
+    let lower = rest.to_lowercase();
+    let (name_part, value_part) = if let Some(idx) = lower.find(" equals ") {
+        (&rest[..idx], Some(&rest[idx + 8..]))
+    } else if let Some(idx) = lower.find(" = ") {
+        (&rest[..idx], Some(&rest[idx + 3..]))
+    } else {
+        (rest, None)
+    };
+    
+    let name = sanitize_identifier(name_part.trim());
+    if name.is_empty() {
+        return None;
+    }
+    
+    let initial_value = value_part.map(|v| v.trim().trim_matches('"').to_string());
+    
+    Some(StatementHint::StringDecl { name, initial_value, size: None })
+}
+
+fn try_extract_comment(line: &str) -> Option<StatementHint> {
+    // "comment: ..." or "note: ..."
+    if let Some(rest) = strip_keyword(line, "comment") {
+        let text = rest.trim_start_matches(':').trim().to_string();
+        return Some(StatementHint::Comment { text, is_block: false });
+    }
+    
+    if let Some(rest) = strip_keyword(line, "note") {
+        let text = rest.trim_start_matches(':').trim().to_string();
+        return Some(StatementHint::Comment { text, is_block: false });
+    }
+    
+    if line.trim().to_lowercase() == "block comment start" {
+        return Some(StatementHint::Comment { text: String::new(), is_block: true });
+    }
+    
+    None
+}
+
+fn try_extract_bitwise(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "x bitwise and y"
+    if lower.contains(" bitwise and ") {
+        let idx = lower.find(" bitwise and ").unwrap();
+        let left = line.trim()[..idx].trim().to_string();
+        let right = line.trim()[idx + 13..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::And, 
+            left, 
+            right: Some(right),
+            target: None 
+        });
+    }
+    
+    if lower.contains(" bitwise or ") {
+        let idx = lower.find(" bitwise or ").unwrap();
+        let left = line.trim()[..idx].trim().to_string();
+        let right = line.trim()[idx + 12..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::Or, 
+            left, 
+            right: Some(right),
+            target: None 
+        });
+    }
+    
+    if lower.contains(" xor ") {
+        let idx = lower.find(" xor ").unwrap();
+        let left = line.trim()[..idx].trim().to_string();
+        let right = line.trim()[idx + 5..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::Xor, 
+            left, 
+            right: Some(right),
+            target: None 
+        });
+    }
+    
+    // "shift x left by n"
+    if lower.starts_with("shift ") && lower.contains(" left by ") {
+        let rest = &line.trim()[6..];
+        let idx = rest.to_lowercase().find(" left by ").unwrap();
+        let left = rest[..idx].trim().to_string();
+        let right = rest[idx + 9..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::ShiftLeft, 
+            left, 
+            right: Some(right),
+            target: None 
+        });
+    }
+    
+    if lower.starts_with("shift ") && lower.contains(" right by ") {
+        let rest = &line.trim()[6..];
+        let idx = rest.to_lowercase().find(" right by ").unwrap();
+        let left = rest[..idx].trim().to_string();
+        let right = rest[idx + 10..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::ShiftRight, 
+            left, 
+            right: Some(right),
+            target: None 
+        });
+    }
+    
+    // "not x" (bitwise NOT)
+    if lower.starts_with("bitwise not ") {
+        let target = line.trim()[12..].trim().to_string();
+        return Some(StatementHint::Bitwise { 
+            operation: BitwiseOp::Not, 
+            left: target, 
+            right: None,
+            target: None 
+        });
+    }
+    
+    None
+}
+
+fn try_extract_cast(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "cast x to int" or "x as int"
+    if let Some(rest) = strip_keyword(line, "cast") {
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" to ") {
+            let expression = rest[..idx].trim().to_string();
+            let target_type = rest[idx + 4..].trim().to_string();
+            if !expression.is_empty() && !target_type.is_empty() {
+                return Some(StatementHint::Cast { expression, target_type });
+            }
+        }
+    }
+    
+    // "x as int" pattern
+    if lower.contains(" as ") && !lower.contains(" equals ") {
+        let idx = lower.find(" as ").unwrap();
+        let expression = line.trim()[..idx].trim().to_string();
+        let target_type = line.trim()[idx + 4..].trim().to_string();
+        if !expression.is_empty() && !target_type.is_empty() {
+            return Some(StatementHint::Cast { expression, target_type });
+        }
+    }
+    
+    None
+}
+
+fn try_extract_array_access(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "get a at i"
+    if let Some(rest) = strip_keyword(line, "get") {
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" at ") {
+            let array = sanitize_identifier(&rest[..idx]);
+            let index = rest[idx + 4..].trim().to_string();
+            if !array.is_empty() && !index.is_empty() {
+                return Some(StatementHint::ArrayAccess { array, index, value: None });
+            }
+        }
+    }
+    
+    // "set a at 0 to 5"
+    if lower.starts_with("set ") && lower.contains(" at ") && lower.contains(" to ") {
+        let rest = &line.trim()[4..];
+        let lower_rest = rest.to_lowercase();
+        if let Some(at_idx) = lower_rest.find(" at ") {
+            if let Some(to_idx) = lower_rest.find(" to ") {
+                if at_idx < to_idx {
+                    let array = sanitize_identifier(&rest[..at_idx]);
+                    let index = rest[at_idx + 4..to_idx].trim().to_string();
+                    let value = rest[to_idx + 4..].trim().to_string();
+                    if !array.is_empty() && !index.is_empty() && !value.is_empty() {
+                        return Some(StatementHint::ArrayAccess { array, index, value: Some(value) });
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+fn try_extract_sizeof(line: &str) -> Option<StatementHint> {
+    // "size of a" or "sizeof a"
+    if let Some(rest) = strip_keyword(line, "size of") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::SizeOf { target });
+        }
+    }
+    
+    if let Some(rest) = strip_keyword(line, "sizeof") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::SizeOf { target });
+        }
+    }
+    
+    None
+}
+
+fn try_extract_ternary(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    
+    // "x when condition else y" → condition ? x : y
+    if lower.contains(" when ") && lower.contains(" else ") {
+        let when_idx = lower.find(" when ").unwrap();
+        let else_idx = lower.find(" else ").unwrap();
+        
+        if when_idx < else_idx {
+            let true_value = line.trim()[..when_idx].trim().to_string();
+            let condition = line.trim()[when_idx + 6..else_idx].trim().to_string();
+            let false_value = line.trim()[else_idx + 6..].trim().to_string();
+            
+            if !condition.is_empty() && !true_value.is_empty() && !false_value.is_empty() {
+                return Some(StatementHint::Ternary { condition, true_value, false_value });
+            }
+        }
+    }
+    
+    None
 }
 
 // ============================================================================
