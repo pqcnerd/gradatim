@@ -1510,56 +1510,29 @@ const ACTION_KEYWORDS: &[&str] = &[
 fn split_condition_from_action(text: &str) -> Option<(&str, &str)> {
     let lower = text.to_lowercase();
     
-    // Find the earliest action keyword that appears after a comparison operator
-    let comparison_ops = [" <= ", " >= ", " < ", " > ", " == ", " != ", 
-                          " equals ", " is ", " not "];
-    
-    // First, check if there's a comparison operator
-    let has_comparison = comparison_ops.iter().any(|op| lower.contains(op));
-    if !has_comparison {
-        return None;
-    }
-    
-    // Find the position after the comparison
-    let mut comparison_end = 0;
-    for op in comparison_ops {
-        if let Some(idx) = lower.find(op) {
-            let end_pos = idx + op.len();
-            // Skip past the operand after the comparison
-            let rest = &text[end_pos..];
-            let operand_end = rest.find(' ').unwrap_or(rest.len());
-            let pos = end_pos + operand_end;
-            if pos > comparison_end {
-                comparison_end = pos;
-            }
-        }
-    }
-    
-    if comparison_end == 0 {
-        return None;
-    }
-    
-    // Now look for action keywords in the remaining text
-    let remaining = &text[comparison_end..];
-    let remaining_lower = remaining.to_lowercase();
-    
+    // Find action keywords directly in the text
     for keyword in ACTION_KEYWORDS {
-        // Look for the keyword as a word boundary
-        let pattern = format!(" {}", keyword);
-        if let Some(idx) = remaining_lower.find(&pattern) {
-            let split_point = comparison_end + idx;
-            let condition = text[..split_point].trim();
-            let action = text[split_point..].trim();
-            if !condition.is_empty() && !action.is_empty() {
-                return Some((condition, action));
-            }
-        }
-        // Also check if it starts with the keyword
-        if remaining_lower.trim_start().starts_with(keyword) {
-            let condition = text[..comparison_end].trim();
-            let action = remaining.trim();
-            if !condition.is_empty() && !action.is_empty() {
-                return Some((condition, action));
+        // Pattern: look for " keyword " or " keyword" at end
+        let patterns = [
+            format!(" {} ", keyword),
+            format!(" {}", keyword),
+        ];
+        
+        for pattern in &patterns {
+            if let Some(idx) = lower.find(pattern) {
+                // Make sure this is after a comparison operator
+                let before = &lower[..idx];
+                let has_comparison = [" <= ", " >= ", " < ", " > ", " == ", " != "]
+                    .iter()
+                    .any(|op| before.contains(op));
+                
+                if has_comparison {
+                    let condition = text[..idx].trim();
+                    let action = text[idx..].trim();
+                    if !condition.is_empty() && !action.is_empty() {
+                        return Some((condition, action));
+                    }
+                }
             }
         }
     }
@@ -2451,18 +2424,8 @@ pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
             info
         }
         
-        StatementHint::Conditional { condition, then_action, else_action, .. } => {
-            let mut info = ReadWriteInfo::default();
-            info.reads = extract_identifiers_from_expression(condition);
-            // Actions may also read variables
-            if let Some(action) = then_action {
-                info.reads.extend(extract_identifiers_from_expression(action));
-            }
-            if let Some(action) = else_action {
-                info.reads.extend(extract_identifiers_from_expression(action));
-            }
-            info
-        }
+        // Conditional is handled by the case below that returns default()
+        // We don't validate reads for conditionals since the user might be experimenting
         
         StatementHint::Loop { iterator, start, end, collection, body_action, .. } => {
             let mut info = ReadWriteInfo::default();

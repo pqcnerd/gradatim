@@ -1617,6 +1617,8 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             let mut lines = vec![format!("{} ({}) {{", keyword, condition)];
             
             if let Some(action) = then_action {
+                // Add empty line for cursor, then the action
+                lines.push("    ".to_string());
                 let translated = translate_inline_action(action);
                 lines.push(format!("    {}", translated));
             } else {
@@ -1626,6 +1628,8 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             
             if let Some(else_act) = else_action {
                 lines.push("else {".to_string());
+                // Add empty line for cursor, then the action
+                lines.push("    ".to_string());
                 let translated = translate_inline_action(else_act);
                 lines.push(format!("    {}", translated));
                 lines.push("}".to_string());
@@ -1731,22 +1735,26 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
 
         // New hint types
         StatementHint::Switch { expression } => {
-            Ok(format!("switch ({}) {{\n\n}}", expression))
+            Ok(format!("switch ({}) {{\n    \n}}", expression))
         }
 
         StatementHint::Case { value, action } => {
             if let Some(act) = action {
-                Ok(format!("case {}:\n    {};\n    break;", value, act))
+                let translated = translate_inline_action(&act);
+                // Add empty line for cursor, then the action
+                Ok(format!("case {}:\n    \n    {}\n    break;", value, translated))
             } else {
-                Ok(format!("case {}:", value))
+                Ok(format!("case {}:\n    ", value))
             }
         }
 
         StatementHint::Default { action } => {
             if let Some(act) = action {
-                Ok(format!("default:\n    {};\n    break;", act))
+                let translated = translate_inline_action(&act);
+                // Add empty line for cursor, then the action
+                Ok(format!("default:\n    \n    {}\n    break;", translated))
             } else {
-                Ok("default:".to_string())
+                Ok("default:\n    ".to_string())
             }
         }
 
@@ -2491,6 +2499,8 @@ fn translate_with_context_c(
             let mut lines = vec![format!("{} ({}) {{", keyword, condition)];
             
             if let Some(action) = then_action {
+                // Add empty line for cursor, then the action
+                lines.push("    ".to_string());
                 let translated = translate_inline_action(action);
                 lines.push(format!("    {}", translated));
             } else {
@@ -2501,6 +2511,8 @@ fn translate_with_context_c(
             
             if let Some(else_act) = else_action {
                 lines.push("else {".to_string());
+                // Add empty line for cursor, then the action
+                lines.push("    ".to_string());
                 let translated = translate_inline_action(else_act);
                 lines.push(format!("    {}", translated));
                 lines.push("}".to_string());
