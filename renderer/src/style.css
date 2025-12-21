@@ -18,7 +18,8 @@ body {
 #app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .top-bar {
@@ -85,6 +86,7 @@ body {
   display: grid;
   grid-template-columns: 240px 1fr 260px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .workspace.sidebar-hidden {
@@ -465,5 +467,10 @@ body {
   background: rgba(138, 180, 255, 0.15);
   color: #e9f1ff;
   cursor: pointer;
+}
+
+/* Terminal Panel Integration */
+#terminal-panel {
+  flex-shrink: 0;
 }
 

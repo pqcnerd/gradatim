@@ -1,7 +1,9 @@
 import * as monaco from 'monaco-editor';
 import './style.css';
+import './terminal/terminal.css';
 import { translateLine } from './api/translatorClient';
 import { initSettingsUI } from './settings';
+import { TerminalPanel } from './terminal';
 import type { DirectoryNode, EditorSettings, TranslateLinePayload } from './types/electron';
 
 type LineTrigger = 'enter' | 'shortcut' | 'regenerate';
@@ -20,6 +22,7 @@ const sidebarRefreshButton = document.getElementById('sidebar-refresh');
 const sidebarElement = document.querySelector('.sidebar') as HTMLElement | null;
 const workspaceContainer = document.querySelector('.workspace') as HTMLElement | null;
 const statusPanelElement = document.querySelector('.status-panel') as HTMLElement | null;
+const terminalPanelContainer = document.getElementById('terminal-panel');
 
 if (!editorContainer || !statusList || !toast || !fileTreeContainer || !tabList) {
   throw new Error('Renderer root elements are missing. Check index.html structure.');
@@ -54,6 +57,7 @@ let sidebarVisible = true;
 let activityVisible = true;
 let minimapEnabled = true;
 let zoomLevel = 0;
+let terminalPanel: TerminalPanel | null = null;
 
 const editor = monaco.editor.create(editorContainer, {
   language: 'c',
@@ -91,6 +95,18 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   '.ts': 'typescript'
 };
 
+// Initialize terminal panel
+if (terminalPanelContainer) {
+  terminalPanel = new TerminalPanel(terminalPanelContainer);
+  // Start hidden by default
+  terminalPanel.hide();
+  
+  // Listen for terminal resize events to adjust editor layout
+  window.addEventListener('terminal-panel-resize', () => {
+    editor.layout();
+  });
+}
+
 const languageFromSetting = (setting?: string) =>
   setting && setting.toLowerCase() === 'python' ? 'python' : 'c';
 
@@ -125,6 +141,10 @@ const basename = (input?: string | null) => {
 const updateWorkspaceInfo = (info: { rootPath?: string | null; rootName?: string | null }) => {
   if (info.rootPath) {
     workspaceRootPath = info.rootPath;
+    // Update terminal panel workspace path
+    if (terminalPanel) {
+      terminalPanel.workspacePath = info.rootPath;
+    }
   }
   if (info.rootName) {
     workspaceRootName = info.rootName;
@@ -309,6 +329,27 @@ const handleMenuCommand = (command: string) => {
       break;
     case 'view:toggleMinimap':
       applyMinimapPreference(!minimapEnabled, true);
+      break;
+    case 'view:toggleTerminal':
+      terminalPanel?.toggle();
+      break;
+    case 'terminal:new':
+      if (terminalPanel) {
+        if (!terminalPanel.visible) {
+          terminalPanel.show();
+        } else {
+          terminalPanel.createTerminal();
+        }
+      }
+      break;
+    case 'terminal:runFile':
+      void runCurrentFile();
+      break;
+    case 'terminal:buildFile':
+      void buildCurrentFile();
+      break;
+    case 'terminal:close':
+      terminalPanel?.hide();
       break;
     default:
       break;
@@ -1335,4 +1376,115 @@ const countSnippetLines = (snippet: string): number => {
   }
   return lines.length;
 };
+
+/**
+ * Run the current file in a terminal
+ */
+const runCurrentFile = async () => {
+  const tab = getActiveTab();
+  if (!tab) {
+    showToast('No file open to run');
+    return;
+  }
+
+  // Save file first if dirty
+  if (tab.dirty) {
+    await saveActiveTab(false);
+  }
+
+  if (!tab.absolutePath) {
+    showToast('Save the file first before running');
+    return;
+  }
+
+  if (!terminalPanel) {
+    showToast('Terminal not available');
+    return;
+  }
+
+  // Show terminal if hidden
+  if (!terminalPanel.visible) {
+    terminalPanel.show();
+  }
+
+  const filePath = tab.absolutePath;
+  const lang = tab.language;
+  let command = '';
+
+  if (lang === 'c' || lang === 'cpp') {
+    // Compile and run C/C++
+    const outputPath = filePath.replace(/\.(c|cpp)$/, '');
+    const compiler = lang === 'cpp' ? 'g++' : 'gcc';
+    command = `${compiler} "${filePath}" -o "${outputPath}" && "${outputPath}"`;
+  } else if (lang === 'python') {
+    command = `python3 "${filePath}"`;
+  } else if (lang === 'javascript') {
+    command = `node "${filePath}"`;
+  } else if (lang === 'typescript') {
+    command = `npx ts-node "${filePath}"`;
+  } else {
+    showToast(`Don't know how to run ${lang} files`);
+    return;
+  }
+
+  await terminalPanel.runCommand(command, `Run: ${tab.title}`);
+  pushStatus(`Running ${tab.title}`);
+};
+
+/**
+ * Build the current file without running
+ */
+const buildCurrentFile = async () => {
+  const tab = getActiveTab();
+  if (!tab) {
+    showToast('No file open to build');
+    return;
+  }
+
+  // Save file first if dirty
+  if (tab.dirty) {
+    await saveActiveTab(false);
+  }
+
+  if (!tab.absolutePath) {
+    showToast('Save the file first before building');
+    return;
+  }
+
+  if (!terminalPanel) {
+    showToast('Terminal not available');
+    return;
+  }
+
+  // Show terminal if hidden
+  if (!terminalPanel.visible) {
+    terminalPanel.show();
+  }
+
+  const filePath = tab.absolutePath;
+  const lang = tab.language;
+  let command = '';
+
+  if (lang === 'c' || lang === 'cpp') {
+    const outputPath = filePath.replace(/\.(c|cpp)$/, '');
+    const compiler = lang === 'cpp' ? 'g++' : 'gcc';
+    command = `${compiler} "${filePath}" -o "${outputPath}"`;
+  } else if (lang === 'typescript') {
+    command = `npx tsc "${filePath}"`;
+  } else {
+    showToast(`No build step for ${lang} files`);
+    return;
+  }
+
+  await terminalPanel.runCommand(command, `Build: ${tab.title}`);
+  pushStatus(`Building ${tab.title}`);
+};
+
+// Add keyboard shortcut for terminal toggle (Ctrl+`)
+document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.ctrlKey && e.key === '`') {
+    e.preventDefault();
+    terminalPanel?.toggle();
+  }
+});
 

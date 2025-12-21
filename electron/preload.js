@@ -17,6 +17,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_event, command) => callback(command);
     ipcRenderer.on('menu-command', listener);
     return () => ipcRenderer.removeListener('menu-command', listener);
+  },
+
+  // Terminal API
+  terminal: {
+    create: (options = {}) => ipcRenderer.invoke('terminal:create', options),
+    write: (id, data) => ipcRenderer.invoke('terminal:write', { id, data }),
+    resize: (id, cols, rows) => ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
+    close: (id) => ipcRenderer.invoke('terminal:close', { id }),
+    runCommand: (command, cwd) => ipcRenderer.invoke('terminal:run-command', { command, cwd }),
+    list: () => ipcRenderer.invoke('terminal:list'),
+    onData: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('terminal:data', listener);
+      return () => ipcRenderer.removeListener('terminal:data', listener);
+    },
+    onExit: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('terminal:exit', listener);
+      return () => ipcRenderer.removeListener('terminal:exit', listener);
+    }
   }
 });
 

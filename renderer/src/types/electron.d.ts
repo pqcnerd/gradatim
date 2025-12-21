@@ -69,6 +69,42 @@ export interface SaveResult {
   name?: string;
 }
 
+export interface TerminalCreateResult {
+  success: boolean;
+  id?: string;
+  pid?: number;
+  error?: string;
+}
+
+export interface TerminalDataEvent {
+  id: string;
+  data: string;
+}
+
+export interface TerminalExitEvent {
+  id: string;
+  exitCode: number;
+  signal?: number;
+}
+
+export interface TerminalAPI {
+  create(options?: {
+    shell?: string;
+    args?: string[];
+    cwd?: string;
+    cols?: number;
+    rows?: number;
+    env?: Record<string, string>;
+  }): Promise<TerminalCreateResult>;
+  write(id: string, data: string): Promise<boolean>;
+  resize(id: string, cols: number, rows: number): Promise<boolean>;
+  close(id: string): Promise<boolean>;
+  runCommand(command: string, cwd?: string): Promise<TerminalCreateResult>;
+  list(): Promise<string[]>;
+  onData(callback: (event: TerminalDataEvent) => void): () => void;
+  onExit(callback: (event: TerminalExitEvent) => void): () => void;
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -98,6 +134,7 @@ declare global {
       getZoomLevel?(): Promise<number>;
       setZoomLevel?(level: number): Promise<number>;
       onMenuCommand?(callback: (command: string) => void): () => void;
+      terminal?: TerminalAPI;
     };
   }
 }

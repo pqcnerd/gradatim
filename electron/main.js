@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const { promises: fsPromises } = require('node:fs');
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const { createConfigStore, DEFAULT_SETTINGS } = require('./config-store');
+const ptyManager = require('./pty-manager');
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const devServerURL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
@@ -44,8 +45,11 @@ app.whenReady().then(() => {
   rustEndpoint = currentSettings.rustCoreUrl || fallbackRustEndpoint;
 
   const win = createMainWindow();
-  const menu = Menu.buildFromTemplate(buildMenuTemplate());
+  const menu = Menu.buildFromTemplate(buildMenuTemplate(win));
   Menu.setApplicationMenu(menu);
+
+  // Set up terminal PTY handlers
+  ptyManager.setupIpcHandlers(ipcMain, win);
 
   ipcMain.handle('translate-line', async (_event, payload) => {
     const body = {
@@ -207,6 +211,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  // Close all terminal sessions
+  ptyManager.closeAllTerminals();
+
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -223,6 +230,12 @@ app.on('window-all-closed', () => {
   ipcMain.removeHandler('dialog:open-folder');
   ipcMain.removeHandler('view:get-zoom');
   ipcMain.removeHandler('view:set-zoom');
+  ipcMain.removeHandler('terminal:create');
+  ipcMain.removeHandler('terminal:write');
+  ipcMain.removeHandler('terminal:resize');
+  ipcMain.removeHandler('terminal:close');
+  ipcMain.removeHandler('terminal:run-command');
+  ipcMain.removeHandler('terminal:list');
 });
 
 const IGNORED_ENTRIES = new Set(['node_modules', '.git', '.cursor', 'dist']);
@@ -414,6 +427,11 @@ function buildMenuTemplate() {
           label: 'Toggle Activity Panel',
           click: () => sendMenuCommand('view:toggleActivity')
         },
+        {
+          label: 'Toggle Terminal',
+          accelerator: 'CmdOrCtrl+`',
+          click: () => sendMenuCommand('view:toggleTerminal')
+        },
         { type: 'separator' },
         {
           label: 'Zoom In',
@@ -434,6 +452,31 @@ function buildMenuTemplate() {
         {
           label: 'Toggle Minimap',
           click: () => sendMenuCommand('view:toggleMinimap')
+        }
+      ]
+    },
+    {
+      label: 'Terminal',
+      submenu: [
+        {
+          label: 'New Terminal',
+          accelerator: 'CmdOrCtrl+Shift+`',
+          click: () => sendMenuCommand('terminal:new')
+        },
+        {
+          label: 'Run Current File',
+          accelerator: 'F5',
+          click: () => sendMenuCommand('terminal:runFile')
+        },
+        {
+          label: 'Build Current File',
+          accelerator: 'Ctrl+Shift+B',
+          click: () => sendMenuCommand('terminal:buildFile')
+        },
+        { type: 'separator' },
+        {
+          label: 'Close Terminal',
+          click: () => sendMenuCommand('terminal:close')
         }
       ]
     }
