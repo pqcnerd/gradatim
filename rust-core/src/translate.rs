@@ -1,4 +1,15 @@
+//! Code generation from English instructions and structured hints.
+//!
+//! This module contains both the new hint-based translation functions
+//! and the legacy string-based translation functions (kept for potential
+//! future use or reference).
+
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Result};
+
+use crate::hints::{ArithmeticOp as HintArithmeticOp, StatementHint};
+use crate::models::TranslateLineRequest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArithmeticOp {
@@ -15,8 +26,6 @@ struct ArithmeticInstruction {
     right: String,
     target: Option<String>,
 }
-
-use crate::models::TranslateLineRequest;
 
 const DECLARE_KEYWORDS: &[&str] = &[
     "declare",
@@ -1370,5 +1379,412 @@ fn handle_py_if(segment: &str) -> Result<String> {
     }
 
     Ok(lines.join("\n"))
+}
+
+// ============================================================================
+// Hint-Based Code Generation
+// ============================================================================
+
+/// Generate code from a structured hint.
+/// This is the new primary code generation path that works with preprocessed hints.
+pub fn translate_from_hint(hint: &StatementHint, language: &str) -> Result<String> {
+    match language.to_lowercase().as_str() {
+        "python" => translate_hint_python(hint),
+        _ => translate_hint_c(hint),
+    }
+}
+
+/// Generate C code from a hint.
+fn translate_hint_c(hint: &StatementHint) -> Result<String> {
+    match hint {
+        StatementHint::Declaration {
+            names,
+            type_hint,
+            initial_value,
+            is_array,
+            array_size,
+        } => {
+            if names.is_empty() {
+                return Err(anyhow!("Declaration requires at least one variable name"));
+            }
+            
+            let c_type = type_hint.as_deref().unwrap_or("int");
+            
+            if *is_array {
+                let size = array_size.as_deref().unwrap_or("10");
+                let decls: Vec<String> = names
+                    .iter()
+                    .map(|name| format!("{} {}[{}];", c_type, name, size))
+                    .collect();
+                Ok(decls.join("\n"))
+            } else {
+                let declarations: Vec<String> = names
+                    .iter()
+                    .map(|name| {
+                        if let Some(val) = initial_value {
+                            format!("{} = {}", name, val)
+                        } else {
+                            name.clone()
+                        }
+                    })
+                    .collect();
+                Ok(format!("{} {};", c_type, declarations.join(", ")))
+            }
+        }
+
+        StatementHint::Assignment { target, value } => {
+            Ok(format!("{} = {};", target, value))
+        }
+
+        StatementHint::Loop {
+            iterator,
+            start,
+            end,
+            collection,
+            body_action,
+        } => {
+            let iter = iterator.as_deref().unwrap_or("i");
+            
+            if let Some(col) = collection {
+                // Collection-based loop
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {};", a))
+                    .unwrap_or_else(|| "    ".to_string());
+                Ok(format!(
+                    "for (int {iter} = 0; {iter} < sizeof({col}) / sizeof({col}[0]); {iter}++) {{\n{body}\n}}",
+                    iter = iter,
+                    col = col,
+                    body = body
+                ))
+            } else {
+                // Range-based loop
+                let start_val = start.as_deref().unwrap_or("0");
+                let end_val = end.as_deref().unwrap_or("10");
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {};", a))
+                    .unwrap_or_else(|| "    ".to_string());
+                Ok(format!(
+                    "for (int {iter} = {start}; {iter} < {end}; {iter}++) {{\n{body}\n}}",
+                    iter = iter,
+                    start = start_val,
+                    end = end_val,
+                    body = body
+                ))
+            }
+        }
+
+        StatementHint::Conditional {
+            condition,
+            then_action,
+            else_action,
+            is_else_if,
+        } => {
+            let keyword = if *is_else_if { "else if" } else { "if" };
+            let mut lines = vec![format!("{} ({}) {{", keyword, condition)];
+            
+            if let Some(action) = then_action {
+                lines.push(format!("    {};", action));
+            } else {
+                lines.push("    ".to_string());
+            }
+            lines.push("}".to_string());
+            
+            if let Some(else_act) = else_action {
+                lines.push("else {".to_string());
+                lines.push(format!("    {};", else_act));
+                lines.push("}".to_string());
+            }
+            
+            Ok(lines.join("\n"))
+        }
+
+        StatementHint::Else => Ok("else {\n    \n}".to_string()),
+
+        StatementHint::EndBlock => Ok("}".to_string()),
+
+        StatementHint::Print { content, is_literal } => {
+            if *is_literal {
+                // For literals, strip any existing quotes and wrap in printf
+                let inner = content.trim_matches('"');
+                Ok(format!("printf(\"{}\\n\");", inner))
+            } else {
+                // For variable expressions, use %d for integer-like identifiers
+                // This is a simple heuristic - single lowercase identifiers are likely int
+                Ok(format!("printf(\"%d\\n\", {});", content))
+            }
+        }
+
+        StatementHint::Return { value } => {
+            if let Some(val) = value {
+                Ok(format!("return {};", val))
+            } else {
+                Ok("return;".to_string())
+            }
+        }
+
+        StatementHint::Arithmetic {
+            operation,
+            left,
+            right,
+            target,
+        } => {
+            let op_symbol = match operation {
+                HintArithmeticOp::Add => "+",
+                HintArithmeticOp::Subtract => "-",
+                HintArithmeticOp::Multiply => "*",
+                HintArithmeticOp::Divide => "/",
+            };
+            
+            let expr = format!("{} {} {}", left, op_symbol, right);
+            
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                let default_name = match operation {
+                    HintArithmeticOp::Add => "sum",
+                    HintArithmeticOp::Subtract => "difference",
+                    HintArithmeticOp::Multiply => "product",
+                    HintArithmeticOp::Divide => "quotient",
+                };
+                Ok(format!("int {} = {};", default_name, expr))
+            }
+        }
+
+        StatementHint::Modify { target, delta } => {
+            if *delta > 0 {
+                Ok(format!("{}++;", target))
+            } else {
+                Ok(format!("{}--;", target))
+            }
+        }
+
+        StatementHint::FunctionDef {
+            name,
+            parameters,
+            return_type,
+        } => {
+            let ret = return_type.as_deref().unwrap_or("int");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters
+                    .iter()
+                    .map(|(ty, n)| format!("{} {}", ty, n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            Ok(format!("{} {}({}) {{\n    \n}}", ret, name, params))
+        }
+
+        StatementHint::StructDef { name, fields } => {
+            let body = if fields.is_empty() {
+                "    int value;".to_string()
+            } else {
+                fields
+                    .iter()
+                    .map(|(ty, n)| format!("    {} {};", ty, n))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok(format!("struct {} {{\n{}\n}};", name, body))
+        }
+
+        StatementHint::MainFunction => {
+            Ok("int main(void) {\n    return 0;\n}".to_string())
+        }
+
+        StatementHint::Unknown { original } => {
+            Err(anyhow!("UNHANDLED: {}", original))
+        }
+    }
+}
+
+/// Generate Python code from a hint.
+fn translate_hint_python(hint: &StatementHint) -> Result<String> {
+    match hint {
+        StatementHint::Declaration {
+            names,
+            type_hint: _,
+            initial_value,
+            is_array,
+            array_size,
+        } => {
+            if names.is_empty() {
+                return Err(anyhow!("Declaration requires at least one variable name"));
+            }
+            
+            if *is_array {
+                let size = array_size.as_deref().unwrap_or("10");
+                let decls: Vec<String> = names
+                    .iter()
+                    .map(|name| format!("{} = [0] * {}", name, size))
+                    .collect();
+                Ok(decls.join("\n"))
+            } else {
+                let val = initial_value.as_deref().unwrap_or("None");
+                if names.len() == 1 {
+                    Ok(format!("{} = {}", names[0], val))
+                } else {
+                    Ok(format!("{} = {}", names.join(" = "), val))
+                }
+            }
+        }
+
+        StatementHint::Assignment { target, value } => {
+            Ok(format!("{} = {}", target, value))
+        }
+
+        StatementHint::Loop {
+            iterator,
+            start,
+            end,
+            collection,
+            body_action,
+        } => {
+            let iter = iterator.as_deref().unwrap_or("i");
+            
+            if let Some(col) = collection {
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {}", a))
+                    .unwrap_or_else(|| "    pass".to_string());
+                Ok(format!("for {} in {}:\n{}", iter, col, body))
+            } else {
+                let start_val = start.as_deref().unwrap_or("0");
+                let end_val = end.as_deref().unwrap_or("10");
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {}", a))
+                    .unwrap_or_else(|| "    pass".to_string());
+                Ok(format!("for {} in range({}, {}):\n{}", iter, start_val, end_val, body))
+            }
+        }
+
+        StatementHint::Conditional {
+            condition,
+            then_action,
+            else_action,
+            is_else_if,
+        } => {
+            let keyword = if *is_else_if { "elif" } else { "if" };
+            let mut lines = vec![format!("{} {}:", keyword, condition)];
+            
+            if let Some(action) = then_action {
+                lines.push(format!("    {}", action));
+            } else {
+                lines.push("    pass".to_string());
+            }
+            
+            if let Some(else_act) = else_action {
+                lines.push("else:".to_string());
+                lines.push(format!("    {}", else_act));
+            }
+            
+            Ok(lines.join("\n"))
+        }
+
+        StatementHint::Else => Ok("else:\n    pass".to_string()),
+
+        StatementHint::EndBlock => Ok(String::new()), // Python doesn't use closing braces
+
+        StatementHint::Print { content, is_literal } => {
+            if *is_literal {
+                // For literals, ensure content is quoted for Python
+                if content.starts_with('"') || content.starts_with('\'') {
+                    Ok(format!("print({})", content))
+                } else {
+                    Ok(format!("print(\"{}\")", content))
+                }
+            } else {
+                // For variables, just print the identifier
+                Ok(format!("print({})", content))
+            }
+        }
+
+        StatementHint::Return { value } => {
+            if let Some(val) = value {
+                Ok(format!("return {}", val))
+            } else {
+                Ok("return".to_string())
+            }
+        }
+
+        StatementHint::Arithmetic {
+            operation,
+            left,
+            right,
+            target,
+        } => {
+            let op_symbol = match operation {
+                HintArithmeticOp::Add => "+",
+                HintArithmeticOp::Subtract => "-",
+                HintArithmeticOp::Multiply => "*",
+                HintArithmeticOp::Divide => "/",
+            };
+            
+            let expr = format!("{} {} {}", left, op_symbol, right);
+            
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                let default_name = match operation {
+                    HintArithmeticOp::Add => "sum_result",
+                    HintArithmeticOp::Subtract => "difference_result",
+                    HintArithmeticOp::Multiply => "product_result",
+                    HintArithmeticOp::Divide => "quotient_result",
+                };
+                Ok(format!("{} = {}", default_name, expr))
+            }
+        }
+
+        StatementHint::Modify { target, delta } => {
+            if *delta > 0 {
+                Ok(format!("{} += 1", target))
+            } else {
+                Ok(format!("{} -= 1", target))
+            }
+        }
+
+        StatementHint::FunctionDef {
+            name,
+            parameters,
+            return_type: _,
+        } => {
+            let params = if parameters.is_empty() {
+                String::new()
+            } else {
+                parameters
+                    .iter()
+                    .map(|(_, n)| n.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            Ok(format!("def {}({}):\n    pass", name, params))
+        }
+
+        StatementHint::StructDef { name, fields } => {
+            // Python uses classes for struct-like behavior
+            let mut lines = vec![format!("class {}:", name)];
+            lines.push("    def __init__(self):".to_string());
+            if fields.is_empty() {
+                lines.push("        self.value = None".to_string());
+            } else {
+                for (_, field_name) in fields {
+                    lines.push(format!("        self.{} = None", field_name));
+                }
+            }
+            Ok(lines.join("\n"))
+        }
+
+        StatementHint::MainFunction => {
+            Ok("def main():\n    pass\n\nif __name__ == \"__main__\":\n    main()".to_string())
+        }
+
+        StatementHint::Unknown { original } => {
+            Err(anyhow!("UNHANDLED: {}", original))
+        }
+    }
 }
 

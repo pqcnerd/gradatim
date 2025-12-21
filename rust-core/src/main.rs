@@ -1,3 +1,15 @@
+//! Gradatim Translation Microservice
+//!
+//! This service translates natural language instructions into code using a
+//! preprocessing pipeline:
+//!
+//! 1. **Intent Classification**: Reject project-level requests
+//! 2. **Hint Extraction**: Parse structured hints from the instruction
+//! 3. **Translation**: Use rule-based or AI translation based on hint complexity
+//! 4. **Validation**: Ensure output is reasonable code
+
+mod hints;
+mod intent;
 mod models;
 mod prompt;
 mod providers;
@@ -13,15 +25,16 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use hints::StatementHint;
 use models::{TranslateLineRequest, TranslateLineResponse};
 use prompt::PromptContext;
 use providers::{AiRequestOptions, GeminiProvider, Provider};
-use translate::translate_line;
-use tracing::{error, info, warn};
+use translate::translate_from_hint;
+use tracing::{debug, error, info, warn};
 
+/// Application state shared across request handlers.
 #[derive(Clone)]
 struct AppState {
-    language: String,
     provider: Provider,
 }
 
@@ -37,10 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = build_provider_from_env();
 
-    let state = AppState {
-        language: "c".to_string(),
-        provider,
-    };
+    let state = AppState { provider };
 
     let app = Router::new()
         .route("/translate-line", post(handle_translate_line))
@@ -58,65 +68,104 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Main translation endpoint handler.
+///
+/// Pipeline:
+/// 1. Classify intent → reject project-level requests
+/// 2. Extract hints → structured understanding of the instruction
+/// 3. Analyze context → check for undeclared variables (warnings only)
+/// 4. For trivial hints → generate code directly from hints
+/// 5. For complex hints → send to AI with hints as context
+/// 6. Validate and return with any warnings
 async fn handle_translate_line(
     State(state): State<AppState>,
     Json(payload): Json<TranslateLineRequest>,
 ) -> impl IntoResponse {
-    if payload.language.to_lowercase() != state.language {
+    let language = if payload.language.is_empty() {
+        "c".to_string()
+    } else {
+        payload.language.to_lowercase()
+    };
+
+    // Step 1: Intent Classification
+    let intent_result = intent::classify(&payload.english_line);
+    if let Some(rejection) = intent_result.rejection_message() {
+        info!(
+            "Rejected project-level request: {}",
+            payload.english_line.chars().take(50).collect::<String>()
+        );
         return (
             StatusCode::BAD_REQUEST,
-            Json(TranslateLineResponse::error("Unsupported language.")),
+            Json(TranslateLineResponse::error(rejection)),
         );
     }
 
-    let max_lines = payload
-        .max_lines
-        .unwrap_or(3)
-        .clamp(1, prompt::HARD_MAX_LINES);
+    // Step 2: Extract Hints
+    let hints = hints::extract(&payload);
+    debug!("Extracted hints: {:?}", hints);
 
-    if let Some(ai_code) = try_ai_translation(&state, &payload, max_lines).await {
-        return (StatusCode::OK, Json(TranslateLineResponse::ok(ai_code)));
+    // Step 3: Context Analysis (warnings only, non-blocking)
+    let context_analysis = hints::analyze_context(&hints, &payload.code_before);
+    if context_analysis.has_warnings() {
+        debug!("Context warnings: {:?}", context_analysis.warnings);
+    }
+    let warnings = context_analysis.warnings;
+
+    // Step 4: For trivial hints, generate code directly (skip AI)
+    if hints.is_trivial() {
+        debug!("Using rule-based translation for trivial hint");
+        return respond_with_hint_based(&hints, &language, warnings);
     }
 
-    respond_with_rule_based(payload, max_lines)
+    // Step 5: Try AI translation with hints
+    if let Some(ai_code) = try_ai_translation_with_hints(&state, &payload, &hints, &language).await
+    {
+        return (
+            StatusCode::OK,
+            Json(TranslateLineResponse::ok_with_warnings(ai_code, warnings)),
+        );
+    }
+
+    // Step 6: Fallback to rule-based if AI fails
+    respond_with_hint_based(&hints, &language, warnings)
 }
 
-fn respond_with_rule_based(
-    payload: TranslateLineRequest,
-    max_lines: usize,
+/// Generate code from a hint using the rule-based translator.
+fn respond_with_hint_based(
+    hint: &StatementHint,
+    language: &str,
+    warnings: Vec<String>,
 ) -> (StatusCode, Json<TranslateLineResponse>) {
-    match translate_line(&payload) {
-        Ok(code) => {
-            if snippet_exceeds_limit(&code, max_lines) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(TranslateLineResponse::error(format!(
-                        "Generated code exceeds the configured line limit ({}).",
-                        max_lines
-                    ))),
-                );
-            }
-            (StatusCode::OK, Json(TranslateLineResponse::ok(code)))
-        }
+    match translate_from_hint(hint, language) {
+        Ok(code) => (
+            StatusCode::OK,
+            Json(TranslateLineResponse::ok_with_warnings(code, warnings)),
+        ),
         Err(err) => {
             let message = err.to_string();
             if message.starts_with("UNHANDLED:") {
-                let placeholder = todo_placeholder(&payload.language, &payload.english_line);
-                return (
+                // Extract the original instruction from the hint
+                let original = match hint {
+                    StatementHint::Unknown { original } => original.clone(),
+                    _ => message.replace("UNHANDLED: ", ""),
+                };
+                let placeholder = todo_placeholder(language, &original);
+                (
                     StatusCode::OK,
                     Json(TranslateLineResponse::unhandled(placeholder)),
-                );
+                )
+            } else {
+                error!("translate_from_hint failed: {err:?}");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(TranslateLineResponse::error(err.to_string())),
+                )
             }
-
-            error!("translate_line failed: {err:?}");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(TranslateLineResponse::error(err.to_string())),
-            )
         }
     }
 }
 
+/// Build the AI provider from environment variables.
 fn build_provider_from_env() -> Provider {
     let api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string());
@@ -126,7 +175,9 @@ fn build_provider_from_env() -> Provider {
             if api_key.is_some() {
                 info!("Gemini provider enabled using model {}", model);
             } else {
-                info!("Gemini provider initialized without API key; expecting per-request credentials.");
+                info!(
+                    "Gemini provider initialized without API key; expecting per-request credentials."
+                );
             }
             Provider::Gemini(Arc::new(provider))
         }
@@ -137,31 +188,45 @@ fn build_provider_from_env() -> Provider {
     }
 }
 
-async fn try_ai_translation(
+/// Attempt AI translation with extracted hints.
+///
+/// The hints are included in the prompt to give the AI structured context
+/// about what the user wants.
+async fn try_ai_translation_with_hints(
     state: &AppState,
     payload: &TranslateLineRequest,
-    max_lines: usize,
+    hints: &StatementHint,
+    language: &str,
 ) -> Option<String> {
     match state.provider.clone() {
-        Provider::None => None,
+        Provider::None => {
+            debug!("No AI provider configured, skipping AI translation");
+            None
+        }
         provider => {
-            let context = PromptContext::from_request(payload, 1200, 600);
+            // Build prompt context with hints
+            let context = PromptContext::with_hints(payload, hints.clone(), 1200, 600);
             let ai_options = AiRequestOptions {
                 api_key: payload.api_key.as_deref(),
                 model: payload.model.as_deref(),
             };
 
-            let result =
-                provider
-                    .generate(&context, ai_options)
-                    .await
-                    .and_then(|candidate| {
-                        prompt::validate_candidate(&candidate, context.max_lines.min(max_lines))?;
-                        Ok(candidate)
-                    });
+            let result = provider
+                .generate(&context, ai_options)
+                .await
+                .and_then(|candidate| {
+                    prompt::validate_candidate(&candidate, language)?;
+                    Ok(candidate)
+                });
 
             match result {
-                Ok(candidate) => Some(candidate),
+                Ok(candidate) => {
+                    info!(
+                        "AI translation succeeded: {} chars",
+                        candidate.len()
+                    );
+                    Some(candidate)
+                }
                 Err(err) => {
                     warn!("AI translation failed, falling back to rule-based: {err:?}");
                     None
@@ -171,24 +236,7 @@ async fn try_ai_translation(
     }
 }
 
-fn snippet_exceeds_limit(snippet: &str, max_lines: usize) -> bool {
-    let capped = max_lines.max(1);
-    let mut lines: Vec<&str> = snippet.split('\n').collect();
-    if lines.is_empty() {
-        return false;
-    }
-    if lines.len() == 1 && lines[0].is_empty() {
-        return false;
-    }
-    if let Some(last) = lines.last() {
-        if last.is_empty() {
-            lines.pop();
-        }
-    }
-    let effective_lines = lines.len().max(1);
-    effective_lines > capped
-}
-
+/// Generate a TODO placeholder comment for unhandled instructions.
 fn todo_placeholder(language: &str, instruction: &str) -> String {
     if language.eq_ignore_ascii_case("python") {
         format!("# TODO: {}", instruction.trim())
@@ -196,4 +244,3 @@ fn todo_placeholder(language: &str, instruction: &str) -> String {
         format!("// TODO: {}", instruction.trim())
     }
 }
-

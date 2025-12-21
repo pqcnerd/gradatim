@@ -1,3 +1,7 @@
+//! Data models for the translation API.
+
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +29,9 @@ pub struct TranslateLineResponse {
     pub kind: ResponseKind,
     pub code: Option<String>,
     pub message: Option<String>,
+    /// Optional warnings (e.g., undeclared variables)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,6 +48,16 @@ impl TranslateLineResponse {
             kind: ResponseKind::Ok,
             code: Some(code.into()),
             message: None,
+            warnings: None,
+        }
+    }
+
+    pub fn ok_with_warnings<S: Into<String>>(code: S, warnings: Vec<String>) -> Self {
+        Self {
+            kind: ResponseKind::Ok,
+            code: Some(code.into()),
+            message: None,
+            warnings: if warnings.is_empty() { None } else { Some(warnings) },
         }
     }
 
@@ -49,6 +66,7 @@ impl TranslateLineResponse {
             kind: ResponseKind::Error,
             code: None,
             message: Some(message.into()),
+            warnings: None,
         }
     }
 
@@ -57,6 +75,7 @@ impl TranslateLineResponse {
             kind: ResponseKind::Unhandled,
             code: Some(placeholder.into()),
             message: Some("Rule-based translator could not interpret this instruction.".into()),
+            warnings: None,
         }
     }
 }

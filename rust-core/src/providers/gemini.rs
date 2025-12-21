@@ -1,3 +1,7 @@
+//! Gemini AI provider implementation.
+
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
