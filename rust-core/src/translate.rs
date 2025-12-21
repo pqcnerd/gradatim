@@ -1432,8 +1432,40 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             }
         }
 
-        StatementHint::Assignment { target, value } => {
-            Ok(format!("{} = {};", target, value))
+        StatementHint::Assignment { targets, value } => {
+            if targets.is_empty() {
+                return Err(anyhow!("Assignment requires at least one target"));
+            }
+            if targets.len() == 1 {
+                Ok(format!("{} = {};", targets[0], value))
+            } else {
+                // Multiple targets with same value
+                let assigns: Vec<String> = targets
+                    .iter()
+                    .map(|t| format!("{} = {}", t, value))
+                    .collect();
+                Ok(format!("{};", assigns.join(", ")))
+            }
+        }
+
+        StatementHint::While { condition, body_action } => {
+            let body = body_action
+                .as_ref()
+                .map(|a| format!("    {};", a))
+                .unwrap_or_else(|| "    ".to_string());
+            Ok(format!("while ({}) {{\n{}\n}}", condition, body))
+        }
+
+        StatementHint::Read { variables } => {
+            if variables.is_empty() {
+                return Err(anyhow!("Read requires at least one variable"));
+            }
+            let mut lines = Vec::new();
+            for var in variables {
+                lines.push(format!("int {};", var));
+                lines.push(format!("scanf(\"%d\", &{});", var));
+            }
+            Ok(lines.join("\n"))
         }
 
         StatementHint::Loop {
@@ -1458,7 +1490,7 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                     body = body
                 ))
             } else {
-                // Range-based loop
+                // Range-based loop (inclusive end)
                 let start_val = start.as_deref().unwrap_or("0");
                 let end_val = end.as_deref().unwrap_or("10");
                 let body = body_action
@@ -1466,7 +1498,7 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                     .map(|a| format!("    {};", a))
                     .unwrap_or_else(|| "    ".to_string());
                 Ok(format!(
-                    "for (int {iter} = {start}; {iter} < {end}; {iter}++) {{\n{body}\n}}",
+                    "for (int {iter} = {start}; {iter} <= {end}; {iter}++) {{\n{body}\n}}",
                     iter = iter,
                     start = start_val,
                     end = end_val,
@@ -1632,8 +1664,35 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
             }
         }
 
-        StatementHint::Assignment { target, value } => {
-            Ok(format!("{} = {}", target, value))
+        StatementHint::Assignment { targets, value } => {
+            if targets.is_empty() {
+                return Err(anyhow!("Assignment requires at least one target"));
+            }
+            if targets.len() == 1 {
+                Ok(format!("{} = {}", targets[0], value))
+            } else {
+                // Python multiple assignment: a = b = c = value
+                Ok(format!("{} = {}", targets.join(" = "), value))
+            }
+        }
+
+        StatementHint::While { condition, body_action } => {
+            let body = body_action
+                .as_ref()
+                .map(|a| format!("    {}", a))
+                .unwrap_or_else(|| "    pass".to_string());
+            Ok(format!("while {}:\n{}", condition, body))
+        }
+
+        StatementHint::Read { variables } => {
+            if variables.is_empty() {
+                return Err(anyhow!("Read requires at least one variable"));
+            }
+            let lines: Vec<String> = variables
+                .iter()
+                .map(|var| format!("{} = int(input())", var))
+                .collect();
+            Ok(lines.join("\n"))
         }
 
         StatementHint::Loop {
@@ -1786,5 +1845,185 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
             Err(anyhow!("UNHANDLED: {}", original))
         }
     }
+}
+
+// ============================================================================
+// Context-Aware Code Generation
+// ============================================================================
+
+use crate::hints::{ValidationResult, VariableContext};
+
+/// Generate code with context-aware variable declarations.
+/// This handles the smart declaration logic:
+/// - Variables in `needs_declaration` get `int x = ...`
+/// - Variables in `already_declared` get `x = ...`
+pub fn translate_with_context(
+    hint: &StatementHint,
+    validation: &ValidationResult,
+    context: &VariableContext,
+    language: &str,
+) -> Result<String> {
+    match language.to_lowercase().as_str() {
+        "python" => translate_hint_python(hint), // Python doesn't need type declarations
+        _ => translate_with_context_c(hint, validation, context),
+    }
+}
+
+/// Generate C code with context-aware declarations.
+fn translate_with_context_c(
+    hint: &StatementHint,
+    validation: &ValidationResult,
+    _context: &VariableContext,
+) -> Result<String> {
+    match hint {
+        // Assignment with smart declaration
+        StatementHint::Assignment { targets, value } => {
+            if targets.is_empty() {
+                return Err(anyhow!("Assignment requires at least one target"));
+            }
+            
+            let mut lines = Vec::new();
+            
+            // Separate new declarations from existing assignments
+            let mut new_vars = Vec::new();
+            let mut existing_vars = Vec::new();
+            
+            for target in targets {
+                if validation.needs_declaration.contains(target) {
+                    new_vars.push(target.clone());
+                } else {
+                    existing_vars.push(target.clone());
+                }
+            }
+            
+            // Generate declarations for new variables
+            if !new_vars.is_empty() {
+                let decls: Vec<String> = new_vars
+                    .iter()
+                    .map(|v| format!("{} = {}", v, value))
+                    .collect();
+                lines.push(format!("int {};", decls.join(", ")));
+            }
+            
+            // Generate simple assignments for existing variables
+            for var in existing_vars {
+                lines.push(format!("{} = {};", var, value));
+            }
+            
+            if lines.is_empty() {
+                // Fallback - shouldn't happen but be safe
+                return translate_hint_c(hint);
+            }
+            
+            Ok(lines.join("\n"))
+        }
+        
+        // Loop with iterator declaration
+        StatementHint::Loop {
+            iterator,
+            start,
+            end,
+            collection,
+            body_action,
+        } => {
+            let iter = iterator.as_deref().unwrap_or("i");
+            let needs_decl = validation.needs_declaration.contains(&iter.to_string());
+            
+            if let Some(col) = collection {
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {};", a))
+                    .unwrap_or_else(|| "    ".to_string());
+                    
+                if needs_decl {
+                    Ok(format!(
+                        "for (int {iter} = 0; {iter} < sizeof({col}) / sizeof({col}[0]); {iter}++) {{\n{body}\n}}",
+                        iter = iter, col = col, body = body
+                    ))
+                } else {
+                    Ok(format!(
+                        "for ({iter} = 0; {iter} < sizeof({col}) / sizeof({col}[0]); {iter}++) {{\n{body}\n}}",
+                        iter = iter, col = col, body = body
+                    ))
+                }
+            } else {
+                let start_val = start.as_deref().unwrap_or("0");
+                let end_val = end.as_deref().unwrap_or("10");
+                let body = body_action
+                    .as_ref()
+                    .map(|a| format!("    {};", a))
+                    .unwrap_or_else(|| "    ".to_string());
+                    
+                if needs_decl {
+                    Ok(format!(
+                        "for (int {iter} = {start}; {iter} <= {end}; {iter}++) {{\n{body}\n}}",
+                        iter = iter, start = start_val, end = end_val, body = body
+                    ))
+                } else {
+                    Ok(format!(
+                        "for ({iter} = {start}; {iter} <= {end}; {iter}++) {{\n{body}\n}}",
+                        iter = iter, start = start_val, end = end_val, body = body
+                    ))
+                }
+            }
+        }
+        
+        // Read with declaration (always declares)
+        StatementHint::Read { variables } => {
+            if variables.is_empty() {
+                return Err(anyhow!("Read requires at least one variable"));
+            }
+            let mut lines = Vec::new();
+            for var in variables {
+                // Only declare if it's new
+                if validation.needs_declaration.contains(var) {
+                    lines.push(format!("int {};", var));
+                }
+                lines.push(format!("scanf(\"%d\", &{});", var));
+            }
+            Ok(lines.join("\n"))
+        }
+        
+        // Print with context-aware variable resolution
+        StatementHint::Print { content, is_literal } => {
+            // Override is_literal based on context
+            let final_is_literal = if content.starts_with('"') || content.starts_with('\'') {
+                // Quoted - always literal
+                true
+            } else if *is_literal {
+                // Was determined to be literal at parse time
+                true
+            } else {
+                // Check if it's actually a declared variable
+                !_context.is_declared(content)
+            };
+            
+            if final_is_literal {
+                let inner = content.trim_matches('"').trim_matches('\'');
+                Ok(format!("printf(\"{}\\n\");", inner))
+            } else {
+                Ok(format!("printf(\"%d\\n\", {});", content))
+            }
+        }
+        
+        // For other hint types, delegate to the basic translator
+        _ => translate_hint_c(hint),
+    }
+}
+
+/// Check if print content should be treated as a variable based on context
+pub fn resolve_print_content(content: &str, context: &VariableContext) -> (String, bool) {
+    // Quoted content is always literal
+    if content.starts_with('"') || content.starts_with('\'') {
+        return (content.to_string(), true);
+    }
+    
+    // Check if it's a declared variable
+    if context.is_declared(content) {
+        return (content.to_string(), false); // is_literal = false means it's a variable
+    }
+    
+    // Not declared - treat as literal string
+    (content.to_string(), true)
 }
 

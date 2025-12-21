@@ -25,11 +25,11 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use hints::StatementHint;
+use hints::{StatementHint, VariableContext, validate_reads};
 use models::{TranslateLineRequest, TranslateLineResponse};
 use prompt::PromptContext;
 use providers::{AiRequestOptions, GeminiProvider, Provider};
-use translate::translate_from_hint;
+use translate::{translate_from_hint, translate_with_context};
 use tracing::{debug, error, info, warn};
 
 /// Application state shared across request handlers.
@@ -104,33 +104,81 @@ async fn handle_translate_line(
     let hints = hints::extract(&payload);
     debug!("Extracted hints: {:?}", hints);
 
-    // Step 3: Context Analysis (warnings only, non-blocking)
-    let context_analysis = hints::analyze_context(&hints, &payload.code_before);
-    if context_analysis.has_warnings() {
-        debug!("Context warnings: {:?}", context_analysis.warnings);
-    }
-    let warnings = context_analysis.warnings;
+    // Step 3: Build Variable Context
+    let context = VariableContext::from_code(&payload.code_before);
+    debug!("Variable context: {:?}", context.get_declared());
 
-    // Step 4: For trivial hints, generate code directly (skip AI)
+    // Step 4: Validate reads - error if undeclared variables are read
+    let validation = validate_reads(&hints, &context);
+    if !validation.is_valid {
+        // Return error for undeclared reads
+        let error_msg = validation.error_message().unwrap_or_else(|| 
+            "unknown error".to_string()
+        );
+        info!("Validation failed: {}", error_msg);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(TranslateLineResponse::error(format!("ERROR: {}", error_msg))),
+        );
+    }
+
+    // Step 5: For trivial hints, generate code with context-aware declarations
     if hints.is_trivial() {
-        debug!("Using rule-based translation for trivial hint");
-        return respond_with_hint_based(&hints, &language, warnings);
+        debug!("Using context-aware rule-based translation for trivial hint");
+        return respond_with_context(&hints, &validation, &context, &language);
     }
 
-    // Step 5: Try AI translation with hints
+    // Step 6: Try AI translation with hints
     if let Some(ai_code) = try_ai_translation_with_hints(&state, &payload, &hints, &language).await
     {
         return (
             StatusCode::OK,
-            Json(TranslateLineResponse::ok_with_warnings(ai_code, warnings)),
+            Json(TranslateLineResponse::ok(ai_code)),
         );
     }
 
-    // Step 6: Fallback to rule-based if AI fails
-    respond_with_hint_based(&hints, &language, warnings)
+    // Step 7: Fallback to context-aware rule-based if AI fails
+    respond_with_context(&hints, &validation, &context, &language)
 }
 
-/// Generate code from a hint using the rule-based translator.
+/// Generate code from a hint using the context-aware translator.
+fn respond_with_context(
+    hint: &StatementHint,
+    validation: &hints::ValidationResult,
+    context: &VariableContext,
+    language: &str,
+) -> (StatusCode, Json<TranslateLineResponse>) {
+    match translate_with_context(hint, validation, context, language) {
+        Ok(code) => (
+            StatusCode::OK,
+            Json(TranslateLineResponse::ok(code)),
+        ),
+        Err(err) => {
+            let message = err.to_string();
+            if message.starts_with("UNHANDLED:") {
+                // Extract the original instruction from the hint
+                let original = match hint {
+                    StatementHint::Unknown { original } => original.clone(),
+                    _ => message.replace("UNHANDLED: ", ""),
+                };
+                let placeholder = todo_placeholder(language, &original);
+                (
+                    StatusCode::OK,
+                    Json(TranslateLineResponse::unhandled(placeholder)),
+                )
+            } else {
+                error!("translate_with_context failed: {err:?}");
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(TranslateLineResponse::error(err.to_string())),
+                )
+            }
+        }
+    }
+}
+
+/// Generate code from a hint using the rule-based translator (legacy, without context).
+#[allow(dead_code)]
 fn respond_with_hint_based(
     hint: &StatementHint,
     language: &str,

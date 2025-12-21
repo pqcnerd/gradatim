@@ -22,18 +22,25 @@ pub enum StatementHint {
         array_size: Option<String>,
     },
 
-    /// Assignment: "set x to 5", "assign 10 to counter"
+    /// Assignment: "set x to 5", "set a, b, c 0"
+    /// Can handle multiple targets with the same value
     Assignment {
-        target: String,
+        targets: Vec<String>,
         value: String,
     },
 
-    /// Loop construct: "loop from 0 to 10", "iterate over array"
+    /// Loop construct: "loop from 0 to 10", "for i 0 to n"
     Loop {
         iterator: Option<String>,
         start: Option<String>,
         end: Option<String>,
         collection: Option<String>,
+        body_action: Option<String>,
+    },
+
+    /// While loop: "while i < n do ..."
+    While {
+        condition: String,
         body_action: Option<String>,
     },
 
@@ -55,6 +62,11 @@ pub enum StatementHint {
     Print {
         content: String,
         is_literal: bool,
+    },
+
+    /// Read input: "read n", "input x"
+    Read {
+        variables: Vec<String>,
     },
 
     /// Return statement: "return x", "return 0"
@@ -121,12 +133,15 @@ impl StatementHint {
             StatementHint::Return { .. } => true,
             StatementHint::Print { .. } => true,
             StatementHint::Arithmetic { .. } => true,
+            StatementHint::Read { .. } => true,
             // Control flow markers
             StatementHint::Else => true,
             StatementHint::EndBlock => true,
             StatementHint::MainFunction => true,
-            // Simple conditionals without embedded actions (rule-based generates complete blocks)
-            StatementHint::Conditional { then_action: None, else_action: None, .. } => true,
+            // Simple conditionals (rule-based generates complete blocks)
+            StatementHint::Conditional { .. } => true,
+            // While loops
+            StatementHint::While { .. } => true,
             // Simple loops (rule-based generates complete blocks with braces)
             StatementHint::Loop { .. } => true,
             // Everything else goes to AI
@@ -161,8 +176,8 @@ impl StatementHint {
                 parts.join("\n")
             }
 
-            StatementHint::Assignment { target, value } => {
-                format!("- Intent: Assignment\n- Target: {}\n- Value: {}", target, value)
+            StatementHint::Assignment { targets, value } => {
+                format!("- Intent: Assignment\n- Targets: {}\n- Value: {}", targets.join(", "), value)
             }
 
             StatementHint::Loop {
@@ -297,6 +312,21 @@ impl StatementHint {
 
             StatementHint::MainFunction => "- Intent: Main function entry point".to_string(),
 
+            StatementHint::While { condition, body_action } => {
+                let mut parts = vec![
+                    "- Intent: While loop".to_string(),
+                    format!("- Condition: {}", condition),
+                ];
+                if let Some(action) = body_action {
+                    parts.push(format!("- Body action: {}", action));
+                }
+                parts.join("\n")
+            }
+
+            StatementHint::Read { variables } => {
+                format!("- Intent: Read input\n- Variables: {}", variables.join(", "))
+            }
+
             StatementHint::Unknown { original } => {
                 format!("- Intent: Unknown (AI should interpret)\n- Original: \"{}\"", original)
             }
@@ -314,7 +344,8 @@ const DECLARE_KEYWORDS: &[&str] = &[
 ];
 
 const LOOP_KEYWORDS: &[&str] = &[
-    "loop", "for loop", "for each", "foreach", "for every", "for all",
+    "loop", "for loop", "for each", "foreach", "for every", "for all", "for",
+    "while",  // "while" with range syntax like "while i 0 to 10" becomes a for loop
     "iterate", "iterate over", "iterate through", "loop over", "loop through",
     "go through", "go over", "cycle through", "traverse", "walk through",
 ];
@@ -388,6 +419,14 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_declaration(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_read(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_while(line) {
         return hint;
     }
 
@@ -627,17 +666,144 @@ fn extract_target(text: &str) -> (String, Option<String>) {
 }
 
 fn try_extract_assignment(line: &str) -> Option<StatementHint> {
-    let rest = strip_keyword(line, "set")?;
+    // Try "set" or "make" as assignment keywords
+    let rest = strip_keyword(line, "set")
+        .or_else(|| strip_keyword(line, "make"))?;
+    
+    // Skip if this looks like "make function" or "make main"
+    let rest_lower = rest.to_lowercase();
+    if rest_lower.starts_with("function") || rest_lower.starts_with("main") {
+        return None;
+    }
+    
+    // Try to parse: "target(s) [to] value"
+    // Patterns:
+    //   set a 5
+    //   set a to 5
+    //   set a, b, c 0
+    //   set a, b 0
+    //   set total a + b * 3
+    
     let lower = rest.to_lowercase();
     
-    if let Some(idx) = lower.find(" to ") {
-        let target = sanitize_identifier(&rest[..idx]);
-        let value = rest[idx + 4..].trim().to_string();
-        if !target.is_empty() && !value.is_empty() {
-            return Some(StatementHint::Assignment { target, value });
+    // Check for "to" separator
+    if let Some(to_idx) = lower.find(" to ") {
+        let targets_part = &rest[..to_idx];
+        let value = rest[to_idx + 4..].trim().to_string();
+        
+        let targets: Vec<String> = targets_part
+            .split(',')
+            .map(|s| sanitize_identifier(s.trim()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        if !targets.is_empty() && !value.is_empty() {
+            return Some(StatementHint::Assignment { targets, value });
         }
     }
+    
+    // No "to" - parse as "targets value" or "targets expression"
+    // Split on last contiguous identifier/expression
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    
+    // Find where targets end and value begins
+    // Targets are comma-separated identifiers at the start
+    let mut target_end_idx = 0;
+    let mut targets = Vec::new();
+    
+    for (i, token) in tokens.iter().enumerate() {
+        let clean = token.trim_matches(',');
+        // If it's a valid identifier (possibly with comma), it's a target
+        if is_valid_identifier_token(clean) {
+            targets.push(sanitize_identifier(clean));
+            target_end_idx = i + 1;
+            // If this token doesn't have a trailing comma and next exists, 
+            // the rest might be the value
+            if !token.ends_with(',') && i + 1 < tokens.len() {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    
+    if targets.is_empty() || target_end_idx >= tokens.len() {
+        return None;
+    }
+    
+    // Everything after targets is the value
+    let value = tokens[target_end_idx..].join(" ");
+    
+    if !value.is_empty() {
+        return Some(StatementHint::Assignment { targets, value });
+    }
+    
     None
+}
+
+fn is_valid_identifier_token(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn try_extract_while(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "while")?;
+    
+    let lower = rest.to_lowercase();
+    
+    // Check if this is actually a for-loop style syntax: "while i 0 to 10"
+    // If it contains " to " with numbers, treat it as a for loop instead
+    if lower.contains(" to ") {
+        // Check if the pattern looks like "iterator start to end"
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 4 {
+            // Check if second token is a number or second-to-last is "to"
+            if tokens.iter().any(|t| t.parse::<f64>().is_ok()) {
+                // This looks like a for loop, not a while loop
+                // Return None to let try_extract_loop handle it
+                return None;
+            }
+        }
+    }
+    
+    // Find "do" separator for body action
+    let (condition_part, body_action) = if let Some(do_idx) = lower.find(" do ") {
+        let cond = rest[..do_idx].trim();
+        let action = rest[do_idx + 4..].trim();
+        (cond, if action.is_empty() { None } else { Some(action.to_string()) })
+    } else {
+        (rest.trim(), None)
+    };
+    
+    let condition = normalize_condition(condition_part);
+    
+    Some(StatementHint::While { condition, body_action })
+}
+
+fn try_extract_read(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "read")
+        .or_else(|| strip_keyword(line, "input"))?;
+    
+    let variables: Vec<String> = rest
+        .split(',')
+        .map(|s| sanitize_identifier(s.trim()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    
+    if variables.is_empty() {
+        return None;
+    }
+    
+    Some(StatementHint::Read { variables })
 }
 
 fn try_extract_declaration(line: &str) -> Option<StatementHint> {
@@ -794,7 +960,7 @@ fn parse_range_loop(text: &str) -> (String, String, String) {
     let mut start = "0".to_string();
     let mut end = "10".to_string();
     
-    // Try to find "from X to Y" pattern
+    // Try to find "from X to Y" pattern: "i from 0 to 10"
     if let Some(from_idx) = lower.find("from ") {
         let after_from = &text[from_idx + 5..];
         if let Some(to_idx) = after_from.to_lowercase().find(" to ") {
@@ -810,27 +976,69 @@ fn parse_range_loop(text: &str) -> (String, String, String) {
             iterator = sanitize_identifier(before_from);
         }
     } else if let Some(to_idx) = lower.find(" to ") {
-        // Just "X to Y" pattern
+        // Pattern without "from": could be "i 0 to 10" or "0 to 10"
         let before = text[..to_idx].trim();
         let after = &text[to_idx + 4..];
         
-        // Try to parse start
         let tokens: Vec<&str> = before.split_whitespace().collect();
-        if let Some(last) = tokens.last() {
-            if last.parse::<i32>().is_ok() {
-                start = last.to_string();
-                if tokens.len() > 1 {
-                    iterator = sanitize_identifier(tokens[0]);
+        
+        match tokens.len() {
+            0 => {}
+            1 => {
+                // Just "0 to 10" - no iterator, first token is start
+                let tok = tokens[0];
+                if tok.parse::<f64>().is_ok() {
+                    start = tok.to_string();
+                } else {
+                    // It's an identifier, treat as iterator
+                    iterator = sanitize_identifier(tok);
                 }
-            } else {
-                iterator = sanitize_identifier(last);
+            }
+            2 => {
+                // "i 0 to 10" - iterator and start
+                let first = tokens[0];
+                let second = tokens[1];
+                
+                if second.parse::<f64>().is_ok() || is_expression(second) {
+                    // First is iterator, second is start
+                    iterator = sanitize_identifier(first);
+                    start = second.to_string();
+                } else {
+                    // Fallback: first is iterator, second might be expression
+                    iterator = sanitize_identifier(first);
+                    start = second.to_string();
+                }
+            }
+            _ => {
+                // Multiple tokens before "to"
+                // First token is likely iterator, rest is start expression
+                iterator = sanitize_identifier(tokens[0]);
+                start = tokens[1..].join(" ");
             }
         }
         
-        end = after.split_whitespace().next().unwrap_or("10").to_string();
+        // Parse end - could be a single value or expression like "n-1" or "n - 1"
+        let end_str = after.trim();
+        // Take until we hit a loop action keyword
+        let end_tokens: Vec<&str> = end_str.split_whitespace().collect();
+        let mut end_parts = Vec::new();
+        for tok in end_tokens {
+            let tok_lower = tok.to_lowercase();
+            if ["do", "print", "printing", "then"].contains(&tok_lower.as_str()) {
+                break;
+            }
+            end_parts.push(tok);
+        }
+        if !end_parts.is_empty() {
+            end = end_parts.join(" ");
+        }
     }
     
     (iterator, start, end)
+}
+
+fn is_expression(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '(' | ')'))
 }
 
 fn extract_loop_action(text: &str) -> Option<String> {
@@ -1054,15 +1262,354 @@ fn normalize_condition(condition: &str) -> String {
 }
 
 // ============================================================================
-// Context Analysis - Variable Declaration Checking
+// Context Analysis - Variable Declaration Tracking
 // ============================================================================
 
-/// Result of context analysis for a hint.
+use std::collections::HashSet;
+
+/// Tracks declared variables from preceding code.
+/// Used to determine whether to declare new variables or just assign.
+#[derive(Debug, Clone)]
+pub struct VariableContext {
+    /// Set of declared variable names
+    pub declared: HashSet<String>,
+}
+
+impl VariableContext {
+    /// Create a new empty context
+    pub fn new() -> Self {
+        Self {
+            declared: HashSet::new(),
+        }
+    }
+
+    /// Extract declared variables from preceding code
+    pub fn from_code(code_before: &str) -> Self {
+        let mut declared = HashSet::new();
+        
+        for line in code_before.lines() {
+            let trimmed = line.trim();
+            
+            // Skip empty lines and comments
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                continue;
+            }
+            
+            // Look for C-style declarations: "type name" or "type name = value"
+            // Pattern: int x; int x = 5; int x, y, z;
+            for type_keyword in ["int", "float", "double", "char", "bool", "long", "short", "unsigned", "void"] {
+                if trimmed.starts_with(type_keyword) {
+                    let rest = &trimmed[type_keyword.len()..];
+                    // Must have space or * after type
+                    if rest.starts_with(' ') || rest.starts_with('*') {
+                        // Extract identifiers after the type
+                        for part in rest.split(',') {
+                            let part = part.trim().trim_end_matches(';').trim_end_matches('{');
+                            // Handle "x = 5" or just "x"
+                            let name = part.split('=').next().unwrap_or("").trim();
+                            // Handle arrays like "x[10]"
+                            let name = name.split('[').next().unwrap_or(name).trim();
+                            // Handle pointers like "*x"
+                            let name = name.trim_start_matches('*').trim();
+                            // Handle function params - skip if contains '('
+                            if name.contains('(') {
+                                continue;
+                            }
+                            if !name.is_empty() && is_valid_identifier(name) {
+                                declared.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Look for scanf declarations: scanf("%d", &x) means x is declared
+            if trimmed.starts_with("scanf(") {
+                // Extract variables from &var patterns
+                for part in trimmed.split('&') {
+                    if part.starts_with("scanf") {
+                        continue;
+                    }
+                    let name = part.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if !name.is_empty() && is_valid_identifier(name) {
+                        declared.insert(name.to_string());
+                    }
+                }
+            }
+            
+            // Look for for-loop iterators: for (int i = ...) or for (i = ...)
+            if trimmed.starts_with("for") && trimmed.contains('(') {
+                if let Some(paren_content) = trimmed.split('(').nth(1) {
+                    let init_part = paren_content.split(';').next().unwrap_or("");
+                    // Handle "int i = 0" or "i = 0"
+                    let init_trimmed = init_part.trim();
+                    for type_keyword in ["int", "float", "double"] {
+                        if init_trimmed.starts_with(type_keyword) {
+                            let rest = init_trimmed[type_keyword.len()..].trim();
+                            let name = rest.split('=').next().unwrap_or("").trim();
+                            if !name.is_empty() && is_valid_identifier(name) {
+                                declared.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Self { declared }
+    }
+
+    /// Check if a variable is declared
+    pub fn is_declared(&self, name: &str) -> bool {
+        self.declared.contains(name)
+    }
+
+    /// Get all declared variables
+    pub fn get_declared(&self) -> Vec<String> {
+        self.declared.iter().cloned().collect()
+    }
+}
+
+/// Check if a string is a valid C identifier
+fn is_valid_identifier(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let first = s.chars().next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Result of validating read variables against context.
+#[derive(Debug, Clone)]
+pub struct ValidationResult {
+    /// Whether validation passed (all reads are declared)
+    pub is_valid: bool,
+    /// Undeclared variables that were read
+    pub undeclared_reads: Vec<String>,
+    /// Variables that need to be declared (write targets not in context)
+    pub needs_declaration: Vec<String>,
+    /// Variables that already exist (write targets in context)
+    pub already_declared: Vec<String>,
+}
+
+impl ValidationResult {
+    pub fn ok() -> Self {
+        Self {
+            is_valid: true,
+            undeclared_reads: Vec::new(),
+            needs_declaration: Vec::new(),
+            already_declared: Vec::new(),
+        }
+    }
+
+    pub fn error(undeclared: Vec<String>) -> Self {
+        Self {
+            is_valid: false,
+            undeclared_reads: undeclared,
+            needs_declaration: Vec::new(),
+            already_declared: Vec::new(),
+        }
+    }
+
+    pub fn error_message(&self) -> Option<String> {
+        if self.is_valid {
+            None
+        } else {
+            Some(format!(
+                "unknown identifiers: {}",
+                self.undeclared_reads.join(", ")
+            ))
+        }
+    }
+}
+
+/// Information about read and write variables in a hint
+#[derive(Debug, Clone, Default)]
+pub struct ReadWriteInfo {
+    /// Variables being written to (can be auto-declared)
+    pub writes: Vec<String>,
+    /// Variables being read from (must already exist)
+    pub reads: Vec<String>,
+}
+
+/// Extract read/write variable information from a hint
+pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
+    match hint {
+        StatementHint::Declaration { names, initial_value, .. } => {
+            let mut info = ReadWriteInfo::default();
+            info.writes = names.clone();
+            // If there's an initial value that's an expression, extract reads
+            if let Some(val) = initial_value {
+                if !val.parse::<f64>().is_ok() && !val.starts_with('"') {
+                    info.reads = extract_identifiers_from_expression(val);
+                }
+            }
+            info
+        }
+        
+        StatementHint::Assignment { targets, value } => {
+            let mut info = ReadWriteInfo::default();
+            info.writes = targets.clone();
+            // Parse value for read variables
+            if !value.parse::<f64>().is_ok() && !value.starts_with('"') {
+                info.reads = extract_identifiers_from_expression(value);
+            }
+            info
+        }
+        
+        StatementHint::Modify { target, .. } => {
+            // Increment/decrement reads AND writes the target
+            ReadWriteInfo {
+                writes: vec![],  // Not a new declaration
+                reads: vec![target.clone()],  // Must exist to modify
+            }
+        }
+        
+        StatementHint::Arithmetic { left, right, target, .. } => {
+            let mut info = ReadWriteInfo::default();
+            info.reads = vec![left.clone(), right.clone()];
+            if let Some(t) = target {
+                info.writes.push(t.clone());
+            }
+            info
+        }
+        
+        StatementHint::Conditional { condition, then_action, else_action, .. } => {
+            let mut info = ReadWriteInfo::default();
+            info.reads = extract_identifiers_from_expression(condition);
+            // Actions may also read variables
+            if let Some(action) = then_action {
+                info.reads.extend(extract_identifiers_from_expression(action));
+            }
+            if let Some(action) = else_action {
+                info.reads.extend(extract_identifiers_from_expression(action));
+            }
+            info
+        }
+        
+        StatementHint::Loop { iterator, start, end, collection, body_action, .. } => {
+            let mut info = ReadWriteInfo::default();
+            // Iterator is a write target (gets declared by the loop)
+            if let Some(iter) = iterator {
+                info.writes.push(iter.clone());
+            }
+            // Start, end, collection are reads
+            if let Some(s) = start {
+                if !s.parse::<f64>().is_ok() {
+                    info.reads.extend(extract_identifiers_from_expression(s));
+                }
+            }
+            if let Some(e) = end {
+                if !e.parse::<f64>().is_ok() {
+                    info.reads.extend(extract_identifiers_from_expression(e));
+                }
+            }
+            if let Some(c) = collection {
+                info.reads.push(c.clone());
+            }
+            if let Some(action) = body_action {
+                info.reads.extend(extract_identifiers_from_expression(action));
+            }
+            info
+        }
+        
+        StatementHint::Print { content: _, is_literal: _ } => {
+            // Print is special: we don't validate reads here because
+            // an undeclared identifier in print becomes a literal string at code gen time
+            // (handled in translate_with_context_c)
+            ReadWriteInfo::default()
+        }
+        
+        StatementHint::Return { value } => {
+            let mut info = ReadWriteInfo::default();
+            if let Some(val) = value {
+                if !val.parse::<f64>().is_ok() {
+                    info.reads = extract_identifiers_from_expression(val);
+                }
+            }
+            info
+        }
+        
+        StatementHint::While { condition, body_action } => {
+            let mut info = ReadWriteInfo::default();
+            info.reads = extract_identifiers_from_expression(condition);
+            if let Some(action) = body_action {
+                info.reads.extend(extract_identifiers_from_expression(action));
+            }
+            info
+        }
+        
+        StatementHint::Read { variables } => {
+            // Read introduces new variables (scanf declares them)
+            ReadWriteInfo {
+                writes: variables.clone(),
+                reads: vec![],
+            }
+        }
+        
+        _ => ReadWriteInfo::default(),
+    }
+}
+
+/// Validate that all read variables are declared in context
+pub fn validate_reads(hint: &StatementHint, context: &VariableContext) -> ValidationResult {
+    let rw_info = get_read_write_info(hint);
+    
+    let mut result = ValidationResult::ok();
+    
+    // Check each read variable
+    for var in &rw_info.reads {
+        // Skip numbers and constants
+        if var.parse::<f64>().is_ok() {
+            continue;
+        }
+        let var_lower = var.to_lowercase();
+        if ["true", "false", "null", "nullptr", "none"].contains(&var_lower.as_str()) {
+            continue;
+        }
+        // Check if declared
+        if !context.is_declared(var) {
+            result.is_valid = false;
+            if !result.undeclared_reads.contains(var) {
+                result.undeclared_reads.push(var.clone());
+            }
+        }
+    }
+    
+    // Classify write variables
+    for var in &rw_info.writes {
+        if context.is_declared(var) {
+            result.already_declared.push(var.clone());
+        } else {
+            result.needs_declaration.push(var.clone());
+        }
+    }
+    
+    result
+}
+
+// Legacy compatibility - keep old function name
+pub fn analyze_context(hint: &StatementHint, code_before: &str) -> ContextAnalysis {
+    let context = VariableContext::from_code(code_before);
+    let validation = validate_reads(hint, &context);
+    
+    ContextAnalysis {
+        warnings: validation.undeclared_reads.iter()
+            .map(|v| format!("Variable '{}' may not be declared", v))
+            .collect(),
+        undeclared_vars: validation.undeclared_reads,
+    }
+}
+
+/// Legacy struct for backward compatibility
 #[derive(Debug, Clone)]
 pub struct ContextAnalysis {
-    /// Warning messages (non-blocking)
     pub warnings: Vec<String>,
-    /// Variables that appear to be used but not declared
     pub undeclared_vars: Vec<String>,
 }
 
@@ -1077,103 +1624,6 @@ impl ContextAnalysis {
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty()
     }
-}
-
-/// Extract declared variable names from preceding code.
-/// This is a simple heuristic that looks for common declaration patterns.
-pub fn extract_declared_variables(code_before: &str) -> Vec<String> {
-    let mut declared = Vec::new();
-    
-    for line in code_before.lines() {
-        let trimmed = line.trim();
-        
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
-            continue;
-        }
-        
-        // Look for C-style declarations: "type name" or "type name = value"
-        // Pattern: int x; int x = 5; int x, y, z;
-        for type_keyword in ["int", "float", "double", "char", "bool", "long", "short", "unsigned"] {
-            if trimmed.starts_with(type_keyword) && trimmed.len() > type_keyword.len() {
-                let rest = &trimmed[type_keyword.len()..];
-                // Extract identifiers after the type
-                for part in rest.split(',') {
-                    let part = part.trim().trim_end_matches(';');
-                    // Handle "x = 5" or just "x"
-                    let name = part.split('=').next().unwrap_or("").trim();
-                    // Handle arrays like "x[10]"
-                    let name = name.split('[').next().unwrap_or(name).trim();
-                    // Handle pointers like "*x"
-                    let name = name.trim_start_matches('*').trim();
-                    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                        declared.push(name.to_string());
-                    }
-                }
-            }
-        }
-        
-        // Look for Python-style assignments: "x = value"
-        if trimmed.contains('=') && !trimmed.contains("==") && !trimmed.contains("!=") {
-            let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                let lhs = parts[0].trim();
-                // Simple identifier on left side
-                if lhs.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    declared.push(lhs.to_string());
-                }
-            }
-        }
-    }
-    
-    declared
-}
-
-/// Analyze a hint in context to produce warnings.
-/// This checks if variables used in the hint have been declared.
-pub fn analyze_context(hint: &StatementHint, code_before: &str) -> ContextAnalysis {
-    let declared = extract_declared_variables(code_before);
-    let mut analysis = ContextAnalysis::empty();
-    
-    // Get variables used by this hint
-    let used_vars = match hint {
-        StatementHint::Assignment { target, .. } => vec![target.clone()],
-        StatementHint::Modify { target, .. } => vec![target.clone()],
-        StatementHint::Print { content, is_literal } => {
-            if *is_literal {
-                vec![]
-            } else {
-                vec![content.clone()]
-            }
-        }
-        StatementHint::Conditional { condition, .. } => {
-            // Extract identifiers from condition
-            extract_identifiers_from_expression(condition)
-        }
-        _ => vec![],
-    };
-    
-    // Check which used variables are not declared
-    for var in used_vars {
-        let var_lower = var.to_lowercase();
-        // Skip obvious non-variables (numbers, known constants)
-        if var.parse::<f64>().is_ok() {
-            continue;
-        }
-        if ["true", "false", "null", "nullptr", "none"].contains(&var_lower.as_str()) {
-            continue;
-        }
-        // Check if declared
-        if !declared.iter().any(|d| d == &var) {
-            analysis.undeclared_vars.push(var.clone());
-            analysis.warnings.push(format!(
-                "Variable '{}' may not be declared. Consider adding: declare {}",
-                var, var
-            ));
-        }
-    }
-    
-    analysis
 }
 
 /// Extract identifier-like tokens from an expression string.
