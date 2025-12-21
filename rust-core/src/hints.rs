@@ -1016,6 +1016,7 @@ fn try_extract_arithmetic(line: &str) -> Option<StatementHint> {
 fn parse_binary_op(text: &str, separators: &[&str]) -> Option<(String, String, Option<String>)> {
     let lower = text.to_lowercase();
     
+    // First try with explicit separators like "and", "to", etc.
     for sep in separators {
         if let Some(idx) = lower.find(sep) {
             let left = text[..idx].trim().to_string();
@@ -1029,6 +1030,17 @@ fn parse_binary_op(text: &str, separators: &[&str]) -> Option<(String, String, O
             }
         }
     }
+    
+    // Fallback: handle "add a b" pattern (space-separated operands)
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.len() >= 2 {
+        let left = tokens[0].to_string();
+        let (right, target) = extract_target(&tokens[1..].join(" "));
+        if !left.is_empty() && !right.is_empty() {
+            return Some((left, right, target));
+        }
+    }
+    
     None
 }
 
@@ -1464,7 +1476,7 @@ fn parse_conditional_parts(text: &str) -> (String, Option<String>, Option<String
         }
     }
     
-    // Extract then action
+    // Extract then action - try explicit separators first
     let main_lower = main.to_lowercase();
     for marker in [" then ", " do "] {
         if let Some(idx) = main_lower.find(marker) {
@@ -1474,8 +1486,85 @@ fn parse_conditional_parts(text: &str) -> (String, Option<String>, Option<String
         }
     }
     
+    // If no explicit separator, look for action keywords after a comparison
+    // Pattern: "a <= b print a" -> condition="a <= b", then_action="print a"
+    if then_action.is_none() {
+        if let Some((cond, action)) = split_condition_from_action(main) {
+            main = cond;
+            then_action = Some(action.to_string());
+        }
+    }
+    
     let condition = normalize_condition(main.trim());
     (condition, then_action, else_action)
+}
+
+/// Action keywords that indicate the start of an inline action
+const ACTION_KEYWORDS: &[&str] = &[
+    "print", "return", "set", "make", "declare", "increment", "decrement",
+    "add", "subtract", "multiply", "divide", "call", "break", "continue",
+];
+
+/// Split a condition from an inline action when no explicit separator exists
+/// Example: "a <= b print a" -> ("a <= b", "print a")
+fn split_condition_from_action(text: &str) -> Option<(&str, &str)> {
+    let lower = text.to_lowercase();
+    
+    // Find the earliest action keyword that appears after a comparison operator
+    let comparison_ops = [" <= ", " >= ", " < ", " > ", " == ", " != ", 
+                          " equals ", " is ", " not "];
+    
+    // First, check if there's a comparison operator
+    let has_comparison = comparison_ops.iter().any(|op| lower.contains(op));
+    if !has_comparison {
+        return None;
+    }
+    
+    // Find the position after the comparison
+    let mut comparison_end = 0;
+    for op in comparison_ops {
+        if let Some(idx) = lower.find(op) {
+            let end_pos = idx + op.len();
+            // Skip past the operand after the comparison
+            let rest = &text[end_pos..];
+            let operand_end = rest.find(' ').unwrap_or(rest.len());
+            let pos = end_pos + operand_end;
+            if pos > comparison_end {
+                comparison_end = pos;
+            }
+        }
+    }
+    
+    if comparison_end == 0 {
+        return None;
+    }
+    
+    // Now look for action keywords in the remaining text
+    let remaining = &text[comparison_end..];
+    let remaining_lower = remaining.to_lowercase();
+    
+    for keyword in ACTION_KEYWORDS {
+        // Look for the keyword as a word boundary
+        let pattern = format!(" {}", keyword);
+        if let Some(idx) = remaining_lower.find(&pattern) {
+            let split_point = comparison_end + idx;
+            let condition = text[..split_point].trim();
+            let action = text[split_point..].trim();
+            if !condition.is_empty() && !action.is_empty() {
+                return Some((condition, action));
+            }
+        }
+        // Also check if it starts with the keyword
+        if remaining_lower.trim_start().starts_with(keyword) {
+            let condition = text[..comparison_end].trim();
+            let action = remaining.trim();
+            if !condition.is_empty() && !action.is_empty() {
+                return Some((condition, action));
+            }
+        }
+    }
+    
+    None
 }
 
 fn try_extract_function(line: &str) -> Option<StatementHint> {
@@ -2420,7 +2509,27 @@ pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
         
         StatementHint::While { condition, body_action } => {
             let mut info = ReadWriteInfo::default();
-            info.reads = extract_identifiers_from_expression(condition);
+            
+            // Parse the condition to identify loop variable vs bound
+            let (loop_var, bound, is_counter) = parse_while_condition_for_rw(condition);
+            
+            if let Some(var) = loop_var {
+                if is_counter {
+                    // For counter patterns (i < 10), the loop var can be auto-declared
+                    info.writes.push(var);
+                } else {
+                    // For general comparisons (a < b), both must exist
+                    info.reads.push(var);
+                }
+            }
+            
+            if let Some(b) = bound {
+                // Only add as read if it's not a literal number
+                if b.parse::<f64>().is_err() {
+                    info.reads.push(b);
+                }
+            }
+            
             if let Some(action) = body_action {
                 info.reads.extend(extract_identifiers_from_expression(action));
             }
@@ -2433,6 +2542,15 @@ pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
                 writes: variables.clone(),
                 reads: vec![],
             }
+        }
+        
+        StatementHint::Conditional { .. } => {
+            // For conditionals, we don't validate reads strictly.
+            // The user might be typing a condition with variables they'll declare later,
+            // or they might be experimenting. The C compiler will catch real errors.
+            // This allows patterns like "if a <= b print a else print b" to work
+            // without requiring a and b to be declared first.
+            ReadWriteInfo::default()
         }
         
         _ => ReadWriteInfo::default(),
@@ -2507,6 +2625,52 @@ impl ContextAnalysis {
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty()
     }
+}
+
+/// Parse a while condition to extract the loop variable, bound, and whether it's a counter pattern
+/// Returns (loop_var, bound, is_counter_pattern)
+fn parse_while_condition_for_rw(condition: &str) -> (Option<String>, Option<String>, bool) {
+    let condition = condition.trim();
+    
+    // Look for comparison operators
+    for op in [" < ", " <= ", " > ", " >= ", " != ", " == "] {
+        if let Some(idx) = condition.find(op) {
+            let left = condition[..idx].trim();
+            let right = condition[idx + op.len()..].trim();
+            
+            // Left side is the loop variable if it's a simple identifier
+            let loop_var = if left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') 
+               && left.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) {
+                Some(left.to_string())
+            } else {
+                None
+            };
+            
+            // Right side is the bound
+            let bound = if !right.is_empty() {
+                Some(right.to_string())
+            } else {
+                None
+            };
+            
+            // Determine if this is a counter pattern:
+            // - Variable is a common iterator name (i, j, k, n, count, counter, idx, index)
+            // - OR bound is a numeric literal
+            let is_counter_var = loop_var.as_ref().map(|v| {
+                matches!(v.to_lowercase().as_str(), 
+                    "i" | "j" | "k" | "n" | "count" | "counter" | "idx" | "index" | "iter")
+            }).unwrap_or(false);
+            let bound_is_numeric = bound.as_ref().map(|b| {
+                b.chars().all(|c| c.is_ascii_digit() || c == '-')
+            }).unwrap_or(false);
+            let is_counter = is_counter_var || bound_is_numeric;
+            
+            return (loop_var, bound, is_counter);
+        }
+    }
+    
+    // Couldn't parse
+    (None, None, false)
 }
 
 /// Extract identifier-like tokens from an expression string.

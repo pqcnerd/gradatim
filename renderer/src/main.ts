@@ -70,7 +70,15 @@ const editor = monaco.editor.create(editorContainer, {
   suggestOnTriggerCharacters: false,
   wordBasedSuggestions: 'off',
   acceptSuggestionOnEnter: 'off',
-  acceptSuggestionOnCommitCharacter: false
+  acceptSuggestionOnCommitCharacter: false,
+  // Enable auto-indentation so pressing Enter maintains indent level
+  autoIndent: 'full',
+  // Format on paste to maintain consistency
+  formatOnPaste: true,
+  // Tab settings
+  tabSize: 4,
+  insertSpaces: true,
+  detectIndentation: false
 });
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
@@ -1004,6 +1012,94 @@ const applyTranslation = (tabId: string, lineNumber: number, rawSnippet: string)
   targetTab.dirty = true;
   renderTabs();
   highlightLine(tabId, lineNumber, 'success');
+
+  // Position cursor appropriately after insertion
+  if (tabId === activeTabId) {
+    positionCursorAfterInsertion(lineNumber, indentedSnippet, indent);
+  }
+};
+
+/**
+ * Position cursor appropriately after code insertion.
+ * - For block statements (if, for, while, switch): position inside the braces
+ * - For regular statements: position at end of last line with proper indentation
+ */
+const positionCursorAfterInsertion = (startLine: number, snippet: string, baseIndent: string) => {
+  const lines = snippet.split('\n');
+  const model = editor.getModel();
+  if (!model) return;
+  
+  // First, try to find a line ending with an opening brace and position inside it
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
+    if (line.endsWith('{')) {
+      // The cursor should go on the next line, inside the block
+      const targetLine = startLine + i + 1;
+      
+      // Get the indent of the line with the brace to calculate block indent
+      const braceLineIndent = lines[i].match(/^\s*/)?.[0] ?? '';
+      const blockIndent = braceLineIndent + '    ';
+      
+      // Check if the next line exists
+      if (targetLine <= model.getLineCount()) {
+        const nextLineContent = model.getLineContent(targetLine);
+        
+        // If it's an empty/whitespace line or closing brace, position cursor there
+        if (nextLineContent.trim() === '' || nextLineContent.trim() === '}') {
+          editor.setPosition({ 
+            lineNumber: targetLine, 
+            column: blockIndent.length + 1 
+          });
+          editor.focus();
+          return;
+        }
+        
+        // If the next line has content (like i++ in while loops), 
+        // we still want cursor before that content
+        // Check if there's an empty line before the content line
+        const lineContent = nextLineContent.trimStart();
+        if (lineContent && !lineContent.startsWith('}')) {
+          // Position at the beginning of this line with proper indent
+          editor.setPosition({
+            lineNumber: targetLine,
+            column: blockIndent.length + 1
+          });
+          editor.focus();
+          return;
+        }
+      }
+    }
+  }
+  
+  // No braces found - position cursor at the end of the inserted code
+  // on a new line with the same base indentation
+  const lastInsertedLine = startLine + lines.length - 1;
+  
+  // Move to the line after the last inserted line if it exists
+  // Otherwise stay on the last inserted line
+  if (lastInsertedLine + 1 <= model.getLineCount()) {
+    const nextLine = lastInsertedLine + 1;
+    const nextLineContent = model.getLineContent(nextLine);
+    const nextLineIndent = nextLineContent.match(/^\s*/)?.[0] ?? '';
+    
+    // If the next line is empty or has less/equal indent, we can position there
+    if (nextLineContent.trim() === '' || nextLineIndent.length <= baseIndent.length) {
+      editor.setPosition({
+        lineNumber: nextLine,
+        column: baseIndent.length + 1
+      });
+      editor.focus();
+      return;
+    }
+  }
+  
+  // Default: position at end of last inserted line
+  const lastLineContent = model.getLineContent(lastInsertedLine);
+  editor.setPosition({
+    lineNumber: lastInsertedLine,
+    column: lastLineContent.length + 1
+  });
+  editor.focus();
 };
 
 const buildPayload = (

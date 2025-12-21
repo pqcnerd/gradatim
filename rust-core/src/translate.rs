@@ -11,6 +11,106 @@ use anyhow::{anyhow, Result};
 use crate::hints::{ArithmeticOp as HintArithmeticOp, StatementHint};
 use crate::models::TranslateLineRequest;
 
+/// Translate an inline action string (like "print a") into C code
+fn translate_inline_action(action: &str) -> String {
+    let trimmed = action.trim();
+    let lower = trimmed.to_lowercase();
+    
+    // Handle "print X"
+    if lower.starts_with("print ") || lower == "print" {
+        let content = trimmed.get(6..).unwrap_or("").trim();
+        if content.is_empty() {
+            return "printf(\"\\n\");".to_string();
+        }
+        // Check if content is quoted
+        if content.starts_with('"') || content.starts_with('\'') {
+            let inner = content.trim_matches(|c| c == '"' || c == '\'');
+            return format!("printf(\"{}\\n\");", inner);
+        }
+        // Assume it's a variable
+        return format!("printf(\"%d\\n\", {});", content);
+    }
+    
+    // Handle "return X"
+    if lower.starts_with("return ") || lower == "return" {
+        let value = trimmed.get(7..).unwrap_or("").trim();
+        if value.is_empty() {
+            return "return;".to_string();
+        }
+        return format!("return {};", value);
+    }
+    
+    // Handle "set X to Y" or "set X Y"
+    if lower.starts_with("set ") {
+        let rest = trimmed.get(4..).unwrap_or("").trim();
+        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        if parts.len() >= 2 {
+            let var = parts[0];
+            let value = if parts.len() >= 3 && parts[1].to_lowercase() == "to" {
+                parts[2]
+            } else {
+                parts[1]
+            };
+            return format!("{} = {};", var, value);
+        }
+    }
+    
+    // Handle "increment X" or "decrement X"
+    if lower.starts_with("increment ") {
+        let var = trimmed.get(10..).unwrap_or("").trim();
+        return format!("{}++;", var);
+    }
+    if lower.starts_with("decrement ") {
+        let var = trimmed.get(10..).unwrap_or("").trim();
+        return format!("{}--;", var);
+    }
+    
+    // Handle "add X to Y" -> "Y += X;"
+    if lower.starts_with("add ") {
+        let rest = trimmed.get(4..).unwrap_or("").trim();
+        if let Some(to_idx) = rest.to_lowercase().find(" to ") {
+            let value = rest[..to_idx].trim();
+            let target = rest[to_idx + 4..].trim();
+            return format!("{} += {};", target, value);
+        }
+    }
+    
+    // Handle "call X" or "call X(args)"
+    if lower.starts_with("call ") {
+        let func = trimmed.get(5..).unwrap_or("").trim();
+        if func.contains('(') {
+            return format!("{};", func);
+        }
+        return format!("{}();", func);
+    }
+    
+    // Handle "break" and "continue"
+    if lower == "break" {
+        return "break;".to_string();
+    }
+    if lower == "continue" {
+        return "continue;".to_string();
+    }
+    
+    // Fallback: just add a semicolon if it doesn't have one
+    if trimmed.ends_with(';') {
+        trimmed.to_string()
+    } else {
+        format!("{};", trimmed)
+    }
+}
+
+/// Strip a word prefix and return the rest if it matches
+fn strip_prefix_word<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if text.starts_with(prefix) {
+        let rest = &text[prefix.len()..];
+        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with(':') {
+            return Some(rest.trim_start());
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArithmeticOp {
     Add,
@@ -1517,7 +1617,8 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             let mut lines = vec![format!("{} ({}) {{", keyword, condition)];
             
             if let Some(action) = then_action {
-                lines.push(format!("    {};", action));
+                let translated = translate_inline_action(action);
+                lines.push(format!("    {}", translated));
             } else {
                 lines.push("    ".to_string());
             }
@@ -1525,7 +1626,8 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             
             if let Some(else_act) = else_action {
                 lines.push("else {".to_string());
-                lines.push(format!("    {};", else_act));
+                let translated = translate_inline_action(else_act);
+                lines.push(format!("    {}", translated));
                 lines.push("}".to_string());
             }
             
@@ -2332,8 +2434,132 @@ fn translate_with_context_c(
             }
         }
         
+        // While loop with smart variable handling
+        StatementHint::While { condition, body_action } => {
+            // Parse condition to find the loop variable
+            let loop_info = parse_while_condition(condition);
+            
+            let mut result = Vec::new();
+            
+            // Only auto-declare and auto-increment for counter patterns (i < 10, j <= n, etc.)
+            // For general comparisons like (a < b), just generate the while loop
+            if loop_info.is_counter_pattern {
+                // If we found a loop variable that needs declaration, declare it
+                if let Some(ref var) = loop_info.variable {
+                    if !_context.is_declared(var) {
+                        // Determine initial value based on comparison direction
+                        let init_val = if loop_info.is_less_than {
+                            // Start at 0 for i < n
+                            "0".to_string()
+                        } else {
+                            // Start at the bound for i > 0 
+                            loop_info.bound.clone().unwrap_or_else(|| "0".to_string())
+                        };
+                        result.push(format!("int {} = {};", var, init_val));
+                    }
+                }
+            }
+            
+            // Build the body
+            let body = if let Some(action) = body_action {
+                format!("    {};", action)
+            } else if loop_info.is_counter_pattern {
+                // Only auto-add incrementer/decrementer for counter patterns
+                // Add an empty line before the incrementer for cursor positioning
+                if let Some(ref var) = loop_info.variable {
+                    if loop_info.is_less_than {
+                        format!("    \n    {}++;", var)
+                    } else {
+                        format!("    \n    {}--;", var)
+                    }
+                } else {
+                    "    ".to_string()
+                }
+            } else {
+                // General while loop - leave body empty for user
+                "    ".to_string()
+            };
+            
+            result.push(format!("while ({}) {{\n{}\n}}", condition, body));
+            
+            Ok(result.join("\n"))
+        }
+        
+        // Conditional with proper cursor positioning
+        StatementHint::Conditional { condition, then_action, else_action, is_else_if } => {
+            let keyword = if *is_else_if { "else if" } else { "if" };
+            let mut lines = vec![format!("{} ({}) {{", keyword, condition)];
+            
+            if let Some(action) = then_action {
+                let translated = translate_inline_action(action);
+                lines.push(format!("    {}", translated));
+            } else {
+                // Empty body - cursor goes here
+                lines.push("    ".to_string());
+            }
+            lines.push("}".to_string());
+            
+            if let Some(else_act) = else_action {
+                lines.push("else {".to_string());
+                let translated = translate_inline_action(else_act);
+                lines.push(format!("    {}", translated));
+                lines.push("}".to_string());
+            }
+            
+            Ok(lines.join("\n"))
+        }
+        
         // For other hint types, delegate to the basic translator
         _ => translate_hint_c(hint),
+    }
+}
+
+/// Parse a while condition to extract loop variable info
+struct WhileLoopInfo {
+    variable: Option<String>,
+    bound: Option<String>,
+    is_less_than: bool, // true for <, <=; false for >, >=
+    is_counter_pattern: bool, // true if this looks like a counter loop (i < 10)
+}
+
+fn parse_while_condition(condition: &str) -> WhileLoopInfo {
+    let condition = condition.trim();
+    
+    // Look for comparison operators
+    for (op, is_less) in [(" < ", true), (" <= ", true), (" > ", false), (" >= ", false)] {
+        if let Some(idx) = condition.find(op) {
+            let left = condition[..idx].trim();
+            let right = condition[idx + op.len()..].trim();
+            
+            // Left side is likely the variable, right is the bound
+            // Check if left looks like an identifier
+            if left.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') 
+               && left.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) {
+                
+                // Determine if this is a counter pattern:
+                // - Variable is a common iterator name (i, j, k, n, count, counter, idx, index)
+                // - OR bound is a numeric literal
+                let is_counter_var = matches!(left.to_lowercase().as_str(), 
+                    "i" | "j" | "k" | "n" | "count" | "counter" | "idx" | "index" | "iter");
+                let bound_is_numeric = right.chars().all(|c| c.is_ascii_digit() || c == '-');
+                let is_counter_pattern = is_counter_var || bound_is_numeric;
+                
+                return WhileLoopInfo {
+                    variable: Some(left.to_string()),
+                    bound: Some(right.to_string()),
+                    is_less_than: is_less,
+                    is_counter_pattern,
+                };
+            }
+        }
+    }
+    
+    // Couldn't parse - no auto-handling
+    WhileLoopInfo {
+        variable: None,
+        bound: None,
+        is_less_than: true,
+        is_counter_pattern: false,
     }
 }
 
