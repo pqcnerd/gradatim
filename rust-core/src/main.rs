@@ -13,6 +13,10 @@ mod intent;
 mod models;
 mod prompt;
 mod providers;
+mod stdlib_db;
+mod func_matcher;
+mod manpage_parser;
+mod synonyms;
 mod translate;
 
 use std::net::SocketAddr;

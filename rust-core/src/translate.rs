@@ -1556,6 +1556,17 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("while ({}) {{\n{}\n}}", condition, body))
         }
 
+        StatementHint::InfiniteLoop => {
+            Ok("while (1) {\n    \n}".to_string())
+        }
+
+        StatementHint::ForEver => {
+            Ok("for (;;) {\n    \n}".to_string())
+        }
+
+        StatementHint::Goto { label } => Ok(format!("goto {};", label)),
+        StatementHint::Label { name } => Ok(format!("{}:", name)),
+
         StatementHint::Read { variables } => {
             if variables.is_empty() {
                 return Err(anyhow!("Read requires at least one variable"));
@@ -1566,6 +1577,43 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 lines.push(format!("scanf(\"%d\", &{});", var));
             }
             Ok(lines.join("\n"))
+        }
+
+        StatementHint::FileOpen { var_name, path, mode } => {
+            Ok(format!("FILE *{} = fopen(\"{}\", \"{}\");", var_name, path.trim_matches('"'), mode))
+        }
+        StatementHint::FileClose { var_name } => Ok(format!("fclose({});", var_name)),
+        StatementHint::FileRead { var_name, buffer, size } => {
+            Ok(format!("fread({}, 1, {}, {});", buffer, size, var_name))
+        }
+        StatementHint::FileWrite { var_name, buffer, size } => {
+            Ok(format!("fwrite({}, 1, {}, {});", buffer, size, var_name))
+        }
+        StatementHint::Fgets { buffer, size, var_name } => {
+            Ok(format!("fgets({}, {}, {});", buffer, size, var_name))
+        }
+        StatementHint::Fputs { content, var_name } => {
+            Ok(format!("fputs(\"{}\", {});", content.trim_matches('"'), var_name))
+        }
+        StatementHint::Fprintf { var_name, format: fmt, args } => {
+            if args.is_empty() {
+                Ok(format!("fprintf({}, \"{}\");", var_name, fmt.trim_matches('"')))
+            } else {
+                Ok(format!("fprintf({}, \"{}\", {});", var_name, fmt.trim_matches('"'), args.join(", ")))
+            }
+        }
+        StatementHint::Fscanf { var_name, args } => {
+            let _fmt = "%d".repeat(args.len().max(1));
+            let mut fmt_chars = String::new();
+            for _ in 0..args.len() {
+                fmt_chars.push_str("%d");
+            }
+            if args.is_empty() {
+                Ok(format!("fscanf({}, \"{}\", &value);", var_name, fmt_chars))
+            } else {
+                let refs: Vec<String> = args.iter().map(|a| format!("&{}", a)).collect();
+                Ok(format!("fscanf({}, \"{}\", {});", var_name, fmt_chars, refs.join(", ")))
+            }
         }
 
         StatementHint::Loop {
@@ -1673,6 +1721,7 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 HintArithmeticOp::Subtract => "-",
                 HintArithmeticOp::Multiply => "*",
                 HintArithmeticOp::Divide => "/",
+                HintArithmeticOp::Modulo => "%",
             };
             
             let expr = format!("{} {} {}", left, op_symbol, right);
@@ -1685,8 +1734,43 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                     HintArithmeticOp::Subtract => "difference",
                     HintArithmeticOp::Multiply => "product",
                     HintArithmeticOp::Divide => "quotient",
+                    HintArithmeticOp::Modulo => "remainder",
                 };
                 Ok(format!("int {} = {};", default_name, expr))
+            }
+        }
+
+        StatementHint::CompoundAssign { target, operator, value } => {
+            let op = match operator {
+                crate::hints::CompoundOp::AddAssign => "+=",
+                crate::hints::CompoundOp::SubAssign => "-=",
+                crate::hints::CompoundOp::MulAssign => "*=",
+                crate::hints::CompoundOp::DivAssign => "/=",
+                crate::hints::CompoundOp::ModAssign => "%=",
+                crate::hints::CompoundOp::ShlAssign => "<<=",
+                crate::hints::CompoundOp::ShrAssign => ">>=",
+                crate::hints::CompoundOp::AndAssign => "&=",
+                crate::hints::CompoundOp::OrAssign => "|=",
+                crate::hints::CompoundOp::XorAssign => "^=",
+            };
+            Ok(format!("{} {} {};", target, op, value))
+        }
+
+        StatementHint::Logical { operation, left, right, target } => {
+            let op = match operation {
+                crate::hints::LogicalOp::And => "&&",
+                crate::hints::LogicalOp::Or => "||",
+                crate::hints::LogicalOp::Not => "!",
+            };
+            let expr = if *operation == crate::hints::LogicalOp::Not {
+                format!("{}{}", op, left)
+            } else {
+                format!("{} {} {}", left, op, right.clone().unwrap_or_default())
+            };
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                Ok(expr)
             }
         }
 
@@ -1716,6 +1800,26 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("{} {}({}) {{\n    \n}}", ret, name, params))
         }
 
+        StatementHint::FunctionPrototype { name, parameters, return_type } => {
+            let ret = return_type.as_deref().unwrap_or("int");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect::<Vec<_>>().join(", ")
+            };
+            Ok(format!("{} {}({});", ret, name, params))
+        }
+
+        StatementHint::QualifiedFunction { qualifier, name, parameters, return_type } => {
+            let ret = return_type.as_deref().unwrap_or("int");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect::<Vec<_>>().join(", ")
+            };
+            Ok(format!("{} {} {}({}) {{\n    \n}}", qualifier, ret, name, params))
+        }
+
         StatementHint::StructDef { name, fields } => {
             let body = if fields.is_empty() {
                 "    int value;".to_string()
@@ -1727,6 +1831,36 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                     .join("\n")
             };
             Ok(format!("struct {} {{\n{}\n}};", name, body))
+        }
+
+        StatementHint::StructAccess { object, field } => {
+            Ok(format!("{}.{}", object, field))
+        }
+
+        StatementHint::StructArrow { pointer, field } => {
+            Ok(format!("{}->{}", pointer, field))
+        }
+
+        StatementHint::StructInit { struct_name, var_name, fields } => {
+            if fields.is_empty() {
+                Ok(format!("{} {} = {{0}};", struct_name, var_name))
+            } else {
+                let pairs: Vec<String> = fields.iter().map(|(k, v)| format!(".{} = {}", k, v)).collect();
+                Ok(format!("{} {} = {{ {} }};", struct_name, var_name, pairs.join(", ")))
+            }
+        }
+
+        StatementHint::UnionDef { name, fields } => {
+            let body = if fields.is_empty() {
+                "    int value;".to_string()
+            } else {
+                fields.iter().map(|(ty, n)| format!("    {} {};", ty, n)).collect::<Vec<_>>().join("\n")
+            };
+            Ok(format!("union {} {{\n{}\n}};", name, body))
+        }
+
+        StatementHint::StructArray { struct_name, var_name, size } => {
+            Ok(format!("{} {}[{}];", struct_name, var_name, size))
         }
 
         StatementHint::MainFunction => {
@@ -1782,6 +1916,14 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             }
         }
 
+        StatementHint::StdLibCall { name, args } => {
+            if args.is_empty() {
+                Ok(format!("{}();", name))
+            } else {
+                Ok(format!("{}({});", name, args.join(", ")))
+            }
+        }
+
         StatementHint::Include { header, is_system } => {
             if *is_system {
                 Ok(format!("#include <{}>", header))
@@ -1792,6 +1934,16 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
 
         StatementHint::Define { name, value } => {
             Ok(format!("#define {} {}", name, value))
+        }
+
+        StatementHint::IfDef { symbol } => Ok(format!("#ifdef {}", symbol)),
+        StatementHint::IfNDef { symbol } => Ok(format!("#ifndef {}", symbol)),
+        StatementHint::EndIf => Ok("#endif".to_string()),
+        StatementHint::Undef { symbol } => Ok(format!("#undef {}", symbol)),
+        StatementHint::Pragma { value } => Ok(format!("#pragma {}", value)),
+        StatementHint::MacroFunction { name, params, body } => {
+            let joined = if params.is_empty() { "".to_string() } else { params.join(",") };
+            Ok(format!("#define {}({}) {}", name, joined, body))
         }
 
         StatementHint::PointerDecl { base_type, name } => {
@@ -1821,6 +1973,54 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("free({});", target))
         }
 
+        StatementHint::Realloc { pointer, count, element_type } => {
+            let c_type = match element_type.to_lowercase().as_str() {
+                "int" | "integer" => "int",
+                "float" => "float",
+                "double" => "double",
+                "char" => "char",
+                _ => "int",
+            };
+            Ok(format!("realloc({}, {} * sizeof({}))", pointer, count, c_type))
+        }
+
+        StatementHint::Calloc { count, element_type, target } => {
+            let c_type = match element_type.to_lowercase().as_str() {
+                "int" | "integer" => "int",
+                "float" => "float",
+                "double" => "double",
+                "char" => "char",
+                _ => "int",
+            };
+            let call = format!("calloc({}, sizeof({}))", count, c_type);
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, call))
+            } else {
+                Ok(call)
+            }
+        }
+
+        StatementHint::PointerArithmetic { pointer, offset, direction } => {
+            let sign = match direction {
+                crate::hints::PointerDir::Forward => "+",
+                crate::hints::PointerDir::Backward => "-",
+            };
+            Ok(format!("{} {}= {};", pointer, sign, offset))
+        }
+
+        StatementHint::FunctionPointer { return_type, name, params } => {
+            let params_str = if params.is_empty() { "void".to_string() } else { params.join(", ") };
+            Ok(format!("{} (*{})({});", return_type, name, params_str))
+        }
+
+        StatementHint::DoublePointer { base_type, name } => {
+            Ok(format!("{} **{};", base_type, name))
+        }
+
+        StatementHint::NullAssign { target } => {
+            Ok(format!("{} = NULL;", target))
+        }
+
         StatementHint::EnumDef { name, values } => {
             if values.is_empty() {
                 Ok(format!("enum {} {{\n\n}};", name))
@@ -1842,6 +2042,76 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 Ok(format!("char {}[256];", name))
             }
         }
+
+        StatementHint::Strcpy { dest, src } => Ok(format!("strcpy({}, {});", dest, src)),
+        StatementHint::Strncpy { dest, src, count } => Ok(format!("strncpy({}, {}, {});", dest, src, count)),
+        StatementHint::Strcat { dest, src } => Ok(format!("strcat({}, {});", dest, src)),
+        StatementHint::Strcmp { left, right, target } => {
+            let expr = format!("strcmp({}, {})", left, right);
+            if let Some(t) = target {
+                Ok(format!("int {} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::Strlen { target, store_in } => {
+            let expr = format!("strlen({})", target);
+            if let Some(t) = store_in {
+                Ok(format!("size_t {} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::Sprintf { buffer, format: fmt, args } => {
+            if args.is_empty() {
+                Ok(format!("sprintf({}, \"{}\");", buffer, fmt.trim_matches('\"')))
+            } else {
+                Ok(format!("sprintf({}, \"{}\", {});", buffer, fmt.trim_matches('\"'), args.join(", ")))
+            }
+        }
+
+        StatementHint::Memcpy { dest, src, size } => {
+            Ok(format!("memcpy({}, {}, {});", dest, src, size))
+        }
+        StatementHint::Memset { dest, value, size } => {
+            Ok(format!("memset({}, {}, {});", dest, value, size))
+        }
+        StatementHint::Exit { code } => Ok(format!("exit({});", code)),
+        StatementHint::Rand { store_in } => {
+            if let Some(t) = store_in {
+                Ok(format!("int {} = rand();", t))
+            } else {
+                Ok("rand();".to_string())
+            }
+        }
+        StatementHint::MathFunc { func, args, store_in } => {
+            let fname = match func {
+                crate::hints::MathFuncKind::Sqrt => "sqrt",
+                crate::hints::MathFuncKind::Pow => "pow",
+                crate::hints::MathFuncKind::Abs => "abs",
+                crate::hints::MathFuncKind::Sin => "sin",
+                crate::hints::MathFuncKind::Cos => "cos",
+                crate::hints::MathFuncKind::Tan => "tan",
+                crate::hints::MathFuncKind::Exp => "exp",
+                crate::hints::MathFuncKind::Log => "log",
+            };
+            let call = format!("{}({})", fname, args.join(", "));
+            if let Some(t) = store_in {
+                Ok(format!("double {} = {};", t, call))
+            } else {
+                Ok(call)
+            }
+        }
+
+        StatementHint::Assert { expression } => Ok(format!("assert({});", expression)),
+        StatementHint::Perror { message } => {
+            if let Some(m) = message {
+                Ok(format!("perror(\"{}\");", m.trim_matches('\"')))
+            } else {
+                Ok("perror(NULL);".to_string())
+            }
+        }
+        StatementHint::ErrnoCheck => Ok("if (errno) {\n    perror(\"error\");\n}".to_string()),
 
         StatementHint::Comment { text, is_block } => {
             if *is_block {
@@ -1883,6 +2153,26 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 Ok(format!("{}[{}] = {};", array, index, val))
             } else {
                 Ok(format!("{}[{}]", array, index))
+            }
+        }
+
+        StatementHint::MultiArrayDecl { type_hint, name, dimensions } => {
+            let ty = type_hint.as_deref().unwrap_or("int");
+            let dims = dimensions.iter().map(|d| format!("[{}]", d)).collect::<Vec<_>>().join("");
+            Ok(format!("{} {}{};", ty, name, dims))
+        }
+
+        StatementHint::ArrayInit { type_hint, name, values } => {
+            let ty = type_hint.as_deref().unwrap_or("int");
+            Ok(format!("{} {}[] = {{ {} }};", ty, name, values.join(", ")))
+        }
+
+        StatementHint::MultiDimAccess { array, indices, value } => {
+            let idx = indices.iter().map(|d| format!("[{}]", d)).collect::<Vec<_>>().join("");
+            if let Some(v) = value {
+                Ok(format!("{}{} = {};", array, idx, v))
+            } else {
+                Ok(format!("{}{}", array, idx))
             }
         }
 
@@ -2048,6 +2338,7 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
                 HintArithmeticOp::Subtract => "-",
                 HintArithmeticOp::Multiply => "*",
                 HintArithmeticOp::Divide => "/",
+                HintArithmeticOp::Modulo => "%",
             };
             
             let expr = format!("{} {} {}", left, op_symbol, right);
@@ -2060,6 +2351,7 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
                     HintArithmeticOp::Subtract => "difference_result",
                     HintArithmeticOp::Multiply => "product_result",
                     HintArithmeticOp::Divide => "quotient_result",
+                    HintArithmeticOp::Modulo => "remainder_result",
                 };
                 Ok(format!("{} = {}", default_name, expr))
             }
@@ -2277,6 +2569,216 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
             Ok(format!("{} if {} else {}", true_value, condition, false_value))
         }
 
+        StatementHint::CompoundAssign { target, operator, value } => {
+            let op = match operator {
+                crate::hints::CompoundOp::AddAssign => "+=",
+                crate::hints::CompoundOp::SubAssign => "-=",
+                crate::hints::CompoundOp::MulAssign => "*=",
+                crate::hints::CompoundOp::DivAssign => "/=",
+                crate::hints::CompoundOp::ModAssign => "%=",
+                crate::hints::CompoundOp::ShlAssign => "<<=",
+                crate::hints::CompoundOp::ShrAssign => ">>=",
+                crate::hints::CompoundOp::AndAssign => "&=",
+                crate::hints::CompoundOp::OrAssign => "|=",
+                crate::hints::CompoundOp::XorAssign => "^=",
+            };
+            Ok(format!("{} {} {}", target, op, value))
+        }
+
+        StatementHint::Logical { operation, left, right, target } => {
+            let op = match operation {
+                crate::hints::LogicalOp::And => "and",
+                crate::hints::LogicalOp::Or => "or",
+                crate::hints::LogicalOp::Not => "not",
+            };
+            let expr = if *operation == crate::hints::LogicalOp::Not {
+                format!("{} {}", op, left)
+            } else {
+                format!("{} {} {}", left, op, right.clone().unwrap_or_default())
+            };
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+
+        StatementHint::IfDef { symbol } => Ok(format!("#ifdef {}", symbol)),
+        StatementHint::IfNDef { symbol } => Ok(format!("#ifndef {}", symbol)),
+        StatementHint::EndIf => Ok("#endif".to_string()),
+        StatementHint::Undef { symbol } => Ok(format!("#undef {}", symbol)),
+        StatementHint::Pragma { value } => Ok(format!("#pragma {}", value)),
+        StatementHint::MacroFunction { name, params, body } => {
+            Ok(format!("#define {}({}) {}", name, params.join(","), body))
+        }
+
+        StatementHint::Realloc { pointer, count, element_type: _ } => {
+            Ok(format!("{0} = [None] * {1}", pointer, count))
+        }
+        StatementHint::Calloc { count, element_type: _, target } => {
+            let expr = format!("[0] * {}", count);
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::PointerArithmetic { pointer, offset, direction } => {
+            let sign = match direction {
+                crate::hints::PointerDir::Forward => "+=",
+                crate::hints::PointerDir::Backward => "-=",
+            };
+            Ok(format!("{} {} {}", pointer, sign, offset))
+        }
+        StatementHint::FunctionPointer { return_type: _, name, params: _ } => {
+            Ok(format!("{} = None  # function pointer", name))
+        }
+        StatementHint::DoublePointer { base_type: _, name } => {
+            Ok(format!("{} = None  # double pointer", name))
+        }
+        StatementHint::NullAssign { target } => Ok(format!("{} = None", target)),
+
+        StatementHint::MultiArrayDecl { type_hint: _, name, dimensions } => {
+            let total = dimensions.join(" * ");
+            Ok(format!("{name} = [0] * ({})", total, name=name))
+        }
+        StatementHint::ArrayInit { type_hint: _, name, values } => {
+            Ok(format!("{} = [{}]", name, values.join(", ")))
+        }
+        StatementHint::MultiDimAccess { array, indices, value } => {
+            let idx = indices.join("][");
+            if let Some(v) = value {
+                Ok(format!("{}[{}] = {}", array, idx, v))
+            } else {
+                Ok(format!("{}[{}]", array, idx))
+            }
+        }
+
+        StatementHint::StructAccess { object, field } => Ok(format!("{}.{}", object, field)),
+        StatementHint::StructArrow { pointer, field } => Ok(format!("{}.{}", pointer, field)),
+        StatementHint::StructInit { struct_name: _, var_name, fields } => {
+            let mut assigns = Vec::new();
+            for (k, v) in fields {
+                assigns.push(format!("'{}': {}", k, v));
+            }
+            Ok(format!("{name} = {{{fields}}}", name=var_name, fields=assigns.join(", ")))
+        }
+        StatementHint::UnionDef { name, fields } => {
+            let body: Vec<String> = fields.iter().map(|(t,n)| format!("{}: None # {}", n, t)).collect();
+            Ok(format!("{} = {{ {} }}", name, body.join(", ")))
+        }
+        StatementHint::StructArray { struct_name: _, var_name, size } => {
+            Ok(format!("{} = [None] * {}", var_name, size))
+        }
+
+        StatementHint::Goto { label } => Ok(format!("# goto {}", label)),
+        StatementHint::Label { name } => Ok(format!("# label {}", name)),
+        StatementHint::InfiniteLoop => Ok("while True:\n    pass".to_string()),
+        StatementHint::ForEver => Ok("while True:\n    pass".to_string()),
+
+        StatementHint::FunctionPrototype { name, parameters, return_type: _ } => {
+            let params = parameters.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
+            Ok(format!("def {}({}):\n    pass", name, params))
+        }
+        StatementHint::QualifiedFunction { qualifier: _, name, parameters, return_type: _ } => {
+            let params = parameters.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
+            Ok(format!("def {}({}):\n    pass", name, params))
+        }
+
+        StatementHint::FileOpen { var_name, path, mode } => {
+            Ok(format!("{} = open(\"{}\", \"{}\")", var_name, path.trim_matches('\"'), mode))
+        }
+        StatementHint::FileClose { var_name } => Ok(format!("{}.close()", var_name)),
+        StatementHint::FileRead { var_name, buffer, size } => {
+            Ok(format!("{} = {}.read({})", buffer, var_name, size))
+        }
+        StatementHint::FileWrite { var_name, buffer, size: _ } => {
+            Ok(format!("{}.write({})", var_name, buffer))
+        }
+        StatementHint::Fgets { buffer, size: _, var_name } => {
+            Ok(format!("{} = {}.readline()", buffer, var_name))
+        }
+        StatementHint::Fputs { content, var_name } => {
+            Ok(format!("{}.write(\"{}\")", var_name, content.trim_matches('\"')))
+        }
+        StatementHint::Fprintf { var_name, format: fmt, args } => {
+            if args.is_empty() {
+                Ok(format!("{}.write(f\"{}\")", var_name, fmt.trim_matches('\"')))
+            } else {
+                Ok(format!("{}.write(f\"{}\")", var_name, fmt.trim_matches('\"')))
+            }
+        }
+        StatementHint::Fscanf { var_name: _, args: _ } => Ok("# fscanf not directly supported".to_string()),
+
+        StatementHint::Strcpy { dest, src } => Ok(format!("{} = str({})", dest, src)),
+        StatementHint::Strncpy { dest, src, count } => Ok(format!("{} = str({})[:{}]", dest, src, count)),
+        StatementHint::Strcat { dest, src } => Ok(format!("{} = str({}) + str({})", dest, dest, src)),
+        StatementHint::Strcmp { left, right, target } => {
+            let expr = format!("({} > {}) - ({} < {})", left, right, left, right);
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::Strlen { target, store_in } => {
+            if let Some(t) = store_in {
+                Ok(format!("{} = len({})", t, target))
+            } else {
+                Ok(format!("len({})", target))
+            }
+        }
+        StatementHint::Sprintf { buffer, format: fmt, args: _ } => {
+            Ok(format!("{} = f\"{}\"", buffer, fmt.trim_matches('\"')))
+        }
+
+        StatementHint::Memcpy { dest, src, size: _ } => Ok(format!("{} = {}[:] ", dest, src)),
+        StatementHint::Memset { dest, value, size } => Ok(format!("{} = [{}] * {}", dest, value, size)),
+        StatementHint::Exit { code } => Ok(format!("raise SystemExit({})", code)),
+        StatementHint::Rand { store_in } => {
+            if let Some(t) = store_in {
+                Ok(format!("import random\n{} = random.randint(0, 2147483647)", t))
+            } else {
+                Ok("import random\nrandom.randint(0, 2147483647)".to_string())
+            }
+        }
+        StatementHint::MathFunc { func, args, store_in } => {
+            let fname = match func {
+                crate::hints::MathFuncKind::Sqrt => "math.sqrt",
+                crate::hints::MathFuncKind::Pow => "math.pow",
+                crate::hints::MathFuncKind::Abs => "abs",
+                crate::hints::MathFuncKind::Sin => "math.sin",
+                crate::hints::MathFuncKind::Cos => "math.cos",
+                crate::hints::MathFuncKind::Tan => "math.tan",
+                crate::hints::MathFuncKind::Exp => "math.exp",
+                crate::hints::MathFuncKind::Log => "math.log",
+            };
+            let call = format!("{}({})", fname, args.join(", "));
+            if let Some(t) = store_in {
+                Ok(format!("import math\n{} = {}", t, call))
+            } else {
+                Ok(format!("import math\n{}", call))
+            }
+        }
+
+        StatementHint::StdLibCall { name, args } => {
+            if args.is_empty() {
+                Ok(format!("{}()", name))
+            } else {
+                Ok(format!("{}({})", name, args.join(", ")))
+            }
+        }
+
+        StatementHint::Assert { expression } => Ok(format!("assert {}", expression)),
+        StatementHint::Perror { message } => {
+            if let Some(m) = message {
+                Ok(format!("import sys\nprint({}, file=sys.stderr)", m))
+            } else {
+                Ok("import sys\nprint('error', file=sys.stderr)".to_string())
+            }
+        }
+        StatementHint::ErrnoCheck => Ok("# errno check (not applicable)".to_string()),
+
         StatementHint::Unknown { original } => {
             Err(anyhow!("UNHANDLED: {}", original))
         }
@@ -2312,6 +2814,65 @@ fn translate_with_context_c(
     _context: &VariableContext,
 ) -> Result<String> {
     match hint {
+        // Declaration with smart redeclaration handling
+        StatementHint::Declaration { names, type_hint, initial_value, is_array, array_size } => {
+            if names.is_empty() {
+                return Err(anyhow!("Declaration requires at least one variable name"));
+            }
+
+            let mut lines = Vec::new();
+            let mut new_vars = Vec::new();
+            let mut existing_vars = Vec::new();
+
+            for name in names {
+                if validation.needs_declaration.contains(name) {
+                    new_vars.push(name.clone());
+                } else {
+                    existing_vars.push(name.clone());
+                }
+            }
+
+            // Handle arrays (only declare new ones; skip redeclare)
+            if *is_array {
+                if !new_vars.is_empty() {
+                    let ty = type_hint.as_deref().unwrap_or("int");
+                    let size = array_size.as_deref().unwrap_or("10");
+                    for n in new_vars {
+                        lines.push(format!("{} {}[{}];", ty, n, size));
+                    }
+                }
+                // If all were existing arrays and no init, we skip emitting to avoid redeclare
+                if lines.is_empty() {
+                    return translate_hint_c(hint);
+                }
+                return Ok(lines.join("\n"));
+            }
+
+            // Non-array: declare new vars; assign existing when initial_value present
+            if !new_vars.is_empty() {
+                let ty = type_hint.as_deref().unwrap_or("int");
+                if let Some(val) = initial_value {
+                    let decls: Vec<String> = new_vars.iter().map(|v| format!("{} = {}", v, val)).collect();
+                    lines.push(format!("{} {};", ty, decls.join(", ")));
+                } else {
+                    lines.push(format!("{} {};", ty, new_vars.join(", ")));
+                }
+            }
+
+            if let Some(val) = initial_value {
+                for n in existing_vars {
+                    lines.push(format!("{} = {};", n, val));
+                }
+            }
+
+            if lines.is_empty() {
+                // No output needed (already declared and no init)
+                return translate_hint_c(hint);
+            }
+
+            Ok(lines.join("\n"))
+        }
+
         // Assignment with smart declaration
         StatementHint::Assignment { targets, value } => {
             if targets.is_empty() {

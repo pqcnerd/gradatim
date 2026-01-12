@@ -5,8 +5,12 @@
 //! the *intent* of the instruction without being language-specific.
 
 use serde::Serialize;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 use crate::models::TranslateLineRequest;
+use crate::func_matcher::{FunctionMatch, match_function_call};
+use crate::stdlib_db::FunctionDatabase;
 
 /// A structured hint extracted from an English instruction.
 /// These hints are language-agnostic and describe programmer intent.
@@ -237,6 +241,190 @@ pub enum StatementHint {
         false_value: String,
     },
 
+    /// Compound assignment: "add 5 to x", "multiply x by 2"
+    CompoundAssign {
+        target: String,
+        operator: CompoundOp,
+        value: String,
+    },
+
+    /// Logical operation: "a and b", "a or b", "not a"
+    Logical {
+        operation: LogicalOp,
+        left: String,
+        right: Option<String>,
+        target: Option<String>,
+    },
+
+    /// Preprocessor controls: #ifdef/#ifndef/#endif/#undef/#pragma
+    IfDef { symbol: String },
+    IfNDef { symbol: String },
+    EndIf,
+    Undef { symbol: String },
+    Pragma { value: String },
+    MacroFunction {
+        name: String,
+        params: Vec<String>,
+        body: String,
+    },
+
+    /// Memory helpers: realloc/calloc/pointer math/null
+    Realloc {
+        pointer: String,
+        count: String,
+        element_type: String,
+    },
+    Calloc {
+        count: String,
+        element_type: String,
+        target: Option<String>,
+    },
+    PointerArithmetic {
+        pointer: String,
+        offset: String,
+        direction: PointerDir,
+    },
+    FunctionPointer {
+        return_type: String,
+        name: String,
+        params: Vec<String>,
+    },
+    DoublePointer {
+        base_type: String,
+        name: String,
+    },
+    NullAssign {
+        target: String,
+    },
+
+    /// Multidimensional arrays and initialization
+    MultiArrayDecl {
+        type_hint: Option<String>,
+        name: String,
+        dimensions: Vec<String>,
+    },
+    ArrayInit {
+        type_hint: Option<String>,
+        name: String,
+        values: Vec<String>,
+    },
+    MultiDimAccess {
+        array: String,
+        indices: Vec<String>,
+        value: Option<String>,
+    },
+
+    /// Struct/union helpers
+    StructAccess {
+        object: String,
+        field: String,
+    },
+    StructArrow {
+        pointer: String,
+        field: String,
+    },
+    StructInit {
+        struct_name: String,
+        var_name: String,
+        fields: Vec<(String, String)>,
+    },
+    UnionDef {
+        name: String,
+        fields: Vec<(String, String)>,
+    },
+    StructArray {
+        struct_name: String,
+        var_name: String,
+        size: String,
+    },
+
+    /// Additional control flow
+    Goto { label: String },
+    Label { name: String },
+    InfiniteLoop,
+    ForEver,
+
+    /// Function qualifiers / prototypes
+    FunctionPrototype {
+        name: String,
+        parameters: Vec<(String, String)>,
+        return_type: Option<String>,
+    },
+    QualifiedFunction {
+        qualifier: String,
+        name: String,
+        parameters: Vec<(String, String)>,
+        return_type: Option<String>,
+    },
+
+    /// File IO helpers
+    FileOpen {
+        var_name: String,
+        path: String,
+        mode: String,
+    },
+    FileClose {
+        var_name: String,
+    },
+    FileRead {
+        var_name: String,
+        buffer: String,
+        size: String,
+    },
+    FileWrite {
+        var_name: String,
+        buffer: String,
+        size: String,
+    },
+    Fgets {
+        buffer: String,
+        size: String,
+        var_name: String,
+    },
+    Fputs {
+        content: String,
+        var_name: String,
+    },
+    Fprintf {
+        var_name: String,
+        format: String,
+        args: Vec<String>,
+    },
+    Fscanf {
+        var_name: String,
+        args: Vec<String>,
+    },
+
+    /// String helpers
+    Strcpy { dest: String, src: String },
+    Strncpy { dest: String, src: String, count: String },
+    Strcat { dest: String, src: String },
+    Strcmp { left: String, right: String, target: Option<String> },
+    Strlen { target: String, store_in: Option<String> },
+    Sprintf { buffer: String, format: String, args: Vec<String> },
+
+    /// Stdlib helpers
+    Memcpy { dest: String, src: String, size: String },
+    Memset { dest: String, value: String, size: String },
+    Exit { code: String },
+    Rand { store_in: Option<String> },
+    MathFunc {
+        func: MathFuncKind,
+        args: Vec<String>,
+        store_in: Option<String>,
+    },
+
+    /// Error handling
+    Assert { expression: String },
+    Perror { message: Option<String> },
+    ErrnoCheck,
+
+    /// Standard library call resolved via include + function registry
+    StdLibCall {
+        name: String,
+        args: Vec<String>,
+    },
+
     /// Unknown - AI handles without specific hints
     Unknown {
         original: String,
@@ -263,6 +451,54 @@ pub enum ArithmeticOp {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
+}
+
+/// Compound assignment types.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompoundOp {
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    ModAssign,
+    ShlAssign,
+    ShrAssign,
+    AndAssign,
+    OrAssign,
+    XorAssign,
+}
+
+/// Logical operation types.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalOp {
+    And,
+    Or,
+    Not,
+}
+
+/// Pointer arithmetic direction.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerDir {
+    Forward,
+    Backward,
+}
+
+/// Math helper functions.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MathFuncKind {
+    Sqrt,
+    Pow,
+    Abs,
+    Sin,
+    Cos,
+    Tan,
+    Exp,
+    Log,
 }
 
 impl StatementHint {
@@ -320,6 +556,58 @@ impl StatementHint {
             StatementHint::ArrayAccess { .. } => true,
             StatementHint::SizeOf { .. } => true,
             StatementHint::Ternary { .. } => true,
+            // New helpers
+            StatementHint::CompoundAssign { .. } => true,
+            StatementHint::Logical { .. } => true,
+            StatementHint::IfDef { .. } => true,
+            StatementHint::IfNDef { .. } => true,
+            StatementHint::EndIf => true,
+            StatementHint::Undef { .. } => true,
+            StatementHint::Pragma { .. } => true,
+            StatementHint::MacroFunction { .. } => true,
+            StatementHint::Realloc { .. } => true,
+            StatementHint::Calloc { .. } => true,
+            StatementHint::PointerArithmetic { .. } => true,
+            StatementHint::FunctionPointer { .. } => true,
+            StatementHint::DoublePointer { .. } => true,
+            StatementHint::NullAssign { .. } => true,
+            StatementHint::MultiArrayDecl { .. } => true,
+            StatementHint::ArrayInit { .. } => true,
+            StatementHint::MultiDimAccess { .. } => true,
+            StatementHint::StructAccess { .. } => true,
+            StatementHint::StructArrow { .. } => true,
+            StatementHint::StructInit { .. } => true,
+            StatementHint::UnionDef { .. } => true,
+            StatementHint::StructArray { .. } => true,
+            StatementHint::Goto { .. } => true,
+            StatementHint::Label { .. } => true,
+            StatementHint::InfiniteLoop => true,
+            StatementHint::ForEver => true,
+            StatementHint::FunctionPrototype { .. } => true,
+            StatementHint::QualifiedFunction { .. } => true,
+            StatementHint::FileOpen { .. } => true,
+            StatementHint::FileClose { .. } => true,
+            StatementHint::FileRead { .. } => true,
+            StatementHint::FileWrite { .. } => true,
+            StatementHint::Fgets { .. } => true,
+            StatementHint::Fputs { .. } => true,
+            StatementHint::Fprintf { .. } => true,
+            StatementHint::Fscanf { .. } => true,
+            StatementHint::Strcpy { .. } => true,
+            StatementHint::Strncpy { .. } => true,
+            StatementHint::Strcat { .. } => true,
+            StatementHint::Strcmp { .. } => true,
+            StatementHint::Strlen { .. } => true,
+            StatementHint::Sprintf { .. } => true,
+            StatementHint::Memcpy { .. } => true,
+            StatementHint::Memset { .. } => true,
+            StatementHint::Exit { .. } => true,
+            StatementHint::Rand { .. } => true,
+            StatementHint::MathFunc { .. } => true,
+            StatementHint::Assert { .. } => true,
+            StatementHint::Perror { .. } => true,
+            StatementHint::ErrnoCheck => true,
+            StatementHint::StdLibCall { .. } => true,
             // Everything else goes to AI
             _ => false,
         }
@@ -432,6 +720,7 @@ impl StatementHint {
                     ArithmeticOp::Subtract => "Subtract",
                     ArithmeticOp::Multiply => "Multiply",
                     ArithmeticOp::Divide => "Divide",
+                    ArithmeticOp::Modulo => "Modulo",
                 };
                 let mut parts = vec![
                     format!("- Intent: Arithmetic ({})", op_str),
@@ -631,6 +920,324 @@ impl StatementHint {
                 format!("- Intent: Ternary\n- Condition: {}\n- True: {}\n- False: {}", condition, true_value, false_value)
             }
 
+            StatementHint::CompoundAssign { target, operator, value } => {
+                let op = match operator {
+                    CompoundOp::AddAssign => "+=",
+                    CompoundOp::SubAssign => "-=",
+                    CompoundOp::MulAssign => "*=",
+                    CompoundOp::DivAssign => "/=",
+                    CompoundOp::ModAssign => "%=",
+                    CompoundOp::ShlAssign => "<<=",
+                    CompoundOp::ShrAssign => ">>=",
+                    CompoundOp::AndAssign => "&=",
+                    CompoundOp::OrAssign => "|=",
+                    CompoundOp::XorAssign => "^=",
+                };
+                format!("- Intent: Compound assignment\n- Target: {}\n- Operator: {}\n- Value: {}", target, op, value)
+            }
+
+            StatementHint::Logical { operation, left, right, target } => {
+                let op = match operation {
+                    LogicalOp::And => "&&",
+                    LogicalOp::Or => "||",
+                    LogicalOp::Not => "!",
+                };
+                let mut s = vec!["- Intent: Logical op".to_string(), format!("- Operator: {}", op)];
+                s.push(format!("- Left: {}", left));
+                if let Some(r) = right {
+                    s.push(format!("- Right: {}", r));
+                }
+                if let Some(t) = target {
+                    s.push(format!("- Store in: {}", t));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::IfDef { symbol } => format!("- Intent: IfDef\n- Symbol: {}", symbol),
+            StatementHint::IfNDef { symbol } => format!("- Intent: IfNDef\n- Symbol: {}", symbol),
+            StatementHint::EndIf => "- Intent: EndIf".to_string(),
+            StatementHint::Undef { symbol } => format!("- Intent: Undef\n- Symbol: {}", symbol),
+            StatementHint::Pragma { value } => format!("- Intent: Pragma\n- Value: {}", value),
+            StatementHint::MacroFunction { name, params, body } => {
+                format!("- Intent: Macro function\n- Name: {}\n- Params: {}\n- Body: {}", name, params.join(", "), body)
+            }
+
+            StatementHint::Realloc { pointer, count, element_type } => {
+                format!("- Intent: Realloc\n- Pointer: {}\n- Count: {}\n- Type: {}", pointer, count, element_type)
+            }
+            StatementHint::Calloc { count, element_type, target } => {
+                let mut s = vec![
+                    "- Intent: Calloc".to_string(),
+                    format!("- Count: {}", count),
+                    format!("- Type: {}", element_type),
+                ];
+                if let Some(t) = target {
+                    s.push(format!("- Store in: {}", t));
+                }
+                s.join("\n")
+            }
+            StatementHint::PointerArithmetic { pointer, offset, direction } => {
+                let dir = match direction {
+                    PointerDir::Forward => "forward",
+                    PointerDir::Backward => "backward",
+                };
+                format!("- Intent: Pointer arithmetic\n- Pointer: {}\n- Offset: {}\n- Direction: {}", pointer, offset, dir)
+            }
+            StatementHint::FunctionPointer { return_type, name, params } => {
+                format!("- Intent: Function pointer\n- Return: {}\n- Name: {}\n- Params: {}", return_type, name, params.join(", "))
+            }
+            StatementHint::DoublePointer { base_type, name } => {
+                format!("- Intent: Double pointer\n- Type: {} **\n- Name: {}", base_type, name)
+            }
+            StatementHint::NullAssign { target } => {
+                format!("- Intent: Null assignment\n- Target: {}", target)
+            }
+
+            StatementHint::MultiArrayDecl { type_hint, name, dimensions } => {
+                let mut s = vec![
+                    "- Intent: Multidimensional array".to_string(),
+                    format!("- Name: {}", name),
+                    format!("- Dimensions: {}", dimensions.join(" x ")),
+                ];
+                if let Some(ty) = type_hint {
+                    s.push(format!("- Type: {}", ty));
+                }
+                s.join("\n")
+            }
+            StatementHint::ArrayInit { type_hint, name, values } => {
+                let mut s = vec![
+                    "- Intent: Array initialization".to_string(),
+                    format!("- Name: {}", name),
+                    format!("- Values: {}", values.join(", ")),
+                ];
+                if let Some(ty) = type_hint {
+                    s.push(format!("- Type: {}", ty));
+                }
+                s.join("\n")
+            }
+            StatementHint::MultiDimAccess { array, indices, value } => {
+                let mut s = vec![
+                    "- Intent: Multidimensional access".to_string(),
+                    format!("- Array: {}", array),
+                    format!("- Indices: {}", indices.join(", ")),
+                ];
+                if let Some(v) = value {
+                    s.push(format!("- Set value: {}", v));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::StructAccess { object, field } => {
+                format!("- Intent: Struct access\n- Object: {}\n- Field: {}", object, field)
+            }
+            StatementHint::StructArrow { pointer, field } => {
+                format!("- Intent: Struct arrow access\n- Pointer: {}\n- Field: {}", pointer, field)
+            }
+            StatementHint::StructInit { struct_name, var_name, fields } => {
+                let mut s = vec![
+                    "- Intent: Struct init".to_string(),
+                    format!("- Type: {}", struct_name),
+                    format!("- Variable: {}", var_name),
+                ];
+                if !fields.is_empty() {
+                    let f: Vec<String> = fields.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                    s.push(format!("- Fields: {}", f.join(", ")));
+                }
+                s.join("\n")
+            }
+            StatementHint::UnionDef { name, fields } => {
+                let mut s = vec![
+                    "- Intent: Union definition".to_string(),
+                    format!("- Name: {}", name),
+                ];
+                if !fields.is_empty() {
+                    let f: Vec<String> = fields.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect();
+                    s.push(format!("- Fields: {}", f.join(", ")));
+                }
+                s.join("\n")
+            }
+            StatementHint::StructArray { struct_name, var_name, size } => {
+                format!("- Intent: Struct array\n- Type: {}\n- Name: {}\n- Size: {}", struct_name, var_name, size)
+            }
+
+            StatementHint::Goto { label } => format!("- Intent: Goto\n- Label: {}", label),
+            StatementHint::Label { name } => format!("- Intent: Label\n- Name: {}", name),
+            StatementHint::InfiniteLoop => "- Intent: Infinite loop".to_string(),
+            StatementHint::ForEver => "- Intent: Forever loop".to_string(),
+
+            StatementHint::FunctionPrototype { name, parameters, return_type } => {
+                let mut s = vec![
+                    "- Intent: Function prototype".to_string(),
+                    format!("- Name: {}", name),
+                ];
+                if !parameters.is_empty() {
+                    let p: Vec<String> = parameters.iter().map(|(t, n)| format!("{} {}", t, n)).collect();
+                    s.push(format!("- Parameters: {}", p.join(", ")));
+                }
+                if let Some(ret) = return_type {
+                    s.push(format!("- Return type: {}", ret));
+                }
+                s.join("\n")
+            }
+            StatementHint::QualifiedFunction { qualifier, name, parameters, return_type } => {
+                let mut s = vec![
+                    "- Intent: Qualified function".to_string(),
+                    format!("- Qualifier: {}", qualifier),
+                    format!("- Name: {}", name),
+                ];
+                if !parameters.is_empty() {
+                    let p: Vec<String> = parameters.iter().map(|(t, n)| format!("{} {}", t, n)).collect();
+                    s.push(format!("- Parameters: {}", p.join(", ")));
+                }
+                if let Some(ret) = return_type {
+                    s.push(format!("- Return type: {}", ret));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::FileOpen { var_name, path, mode } => {
+                format!("- Intent: File open\n- Var: {}\n- Path: {}\n- Mode: {}", var_name, path, mode)
+            }
+            StatementHint::FileClose { var_name } => {
+                format!("- Intent: File close\n- Var: {}", var_name)
+            }
+            StatementHint::FileRead { var_name, buffer, size } => {
+                format!("- Intent: File read\n- File: {}\n- Buffer: {}\n- Size: {}", var_name, buffer, size)
+            }
+            StatementHint::FileWrite { var_name, buffer, size } => {
+                format!("- Intent: File write\n- File: {}\n- Buffer: {}\n- Size: {}", var_name, buffer, size)
+            }
+            StatementHint::Fgets { buffer, size, var_name } => {
+                format!("- Intent: fgets\n- Buffer: {}\n- Size: {}\n- File: {}", buffer, size, var_name)
+            }
+            StatementHint::Fputs { content, var_name } => {
+                format!("- Intent: fputs\n- Content: {}\n- File: {}", content, var_name)
+            }
+            StatementHint::Fprintf { var_name, format: fmt, args } => {
+                let mut s = vec![
+                    "- Intent: fprintf".to_string(),
+                    format!("- File: {}", var_name),
+                    format!("- Format: {}", fmt),
+                ];
+                if !args.is_empty() {
+                    s.push(format!("- Args: {}", args.join(", ")));
+                }
+                s.join("\n")
+            }
+            StatementHint::Fscanf { var_name, args } => {
+                let mut s = vec![
+                    "- Intent: fscanf".to_string(),
+                    format!("- File: {}", var_name),
+                ];
+                if !args.is_empty() {
+                    s.push(format!("- Args: {}", args.join(", ")));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::Strcpy { dest, src } => {
+                format!("- Intent: strcpy\n- Dest: {}\n- Src: {}", dest, src)
+            }
+            StatementHint::Strncpy { dest, src, count } => {
+                format!("- Intent: strncpy\n- Dest: {}\n- Src: {}\n- Count: {}", dest, src, count)
+            }
+            StatementHint::Strcat { dest, src } => {
+                format!("- Intent: strcat\n- Dest: {}\n- Src: {}", dest, src)
+            }
+            StatementHint::Strcmp { left, right, target } => {
+                let mut s = vec![
+                    "- Intent: strcmp".to_string(),
+                    format!("- Left: {}", left),
+                    format!("- Right: {}", right),
+                ];
+                if let Some(t) = target {
+                    s.push(format!("- Store in: {}", t));
+                }
+                s.join("\n")
+            }
+            StatementHint::Strlen { target, store_in } => {
+                let mut s = vec![
+                    "- Intent: strlen".to_string(),
+                    format!("- Target: {}", target),
+                ];
+                if let Some(t) = store_in {
+                    s.push(format!("- Store in: {}", t));
+                }
+                s.join("\n")
+            }
+            StatementHint::Sprintf { buffer, format: fmt, args } => {
+                let mut s = vec![
+                    "- Intent: sprintf".to_string(),
+                    format!("- Buffer: {}", buffer),
+                    format!("- Format: {}", fmt),
+                ];
+                if !args.is_empty() {
+                    s.push(format!("- Args: {}", args.join(", ")));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::Memcpy { dest, src, size } => {
+                format!("- Intent: memcpy\n- Dest: {}\n- Src: {}\n- Size: {}", dest, src, size)
+            }
+            StatementHint::Memset { dest, value, size } => {
+                format!("- Intent: memset\n- Dest: {}\n- Value: {}\n- Size: {}", dest, value, size)
+            }
+            StatementHint::Exit { code } => {
+                format!("- Intent: exit\n- Code: {}", code)
+            }
+            StatementHint::Rand { store_in } => {
+                if let Some(t) = store_in {
+                    format!("- Intent: rand\n- Store in: {}", t)
+                } else {
+                    "- Intent: rand".to_string()
+                }
+            }
+            StatementHint::MathFunc { func, args, store_in } => {
+                let f = match func {
+                    MathFuncKind::Sqrt => "sqrt",
+                    MathFuncKind::Pow => "pow",
+                    MathFuncKind::Abs => "abs",
+                    MathFuncKind::Sin => "sin",
+                    MathFuncKind::Cos => "cos",
+                    MathFuncKind::Tan => "tan",
+                    MathFuncKind::Exp => "exp",
+                    MathFuncKind::Log => "log",
+                };
+                let mut s = vec![
+                    "- Intent: math func".to_string(),
+                    format!("- Func: {}", f),
+                    format!("- Args: {}", args.join(", ")),
+                ];
+                if let Some(t) = store_in {
+                    s.push(format!("- Store in: {}", t));
+                }
+                s.join("\n")
+            }
+
+            StatementHint::Assert { expression } => {
+                format!("- Intent: assert\n- Expression: {}", expression)
+            }
+            StatementHint::Perror { message } => {
+                if let Some(m) = message {
+                    format!("- Intent: perror\n- Message: {}", m)
+                } else {
+                    "- Intent: perror".to_string()
+                }
+            }
+            StatementHint::ErrnoCheck => "- Intent: errno check".to_string(),
+
+            StatementHint::StdLibCall { name, args } => {
+                let mut s = vec![
+                    "- Intent: stdlib call".to_string(),
+                    format!("- Function: {}", name),
+                ];
+                if !args.is_empty() {
+                    s.push(format!("- Args: {}", args.join(", ")));
+                }
+                s.join("\n")
+            }
+
             StatementHint::Unknown { original } => {
                 format!("- Intent: Unknown (AI should interpret)\n- Original: \"{}\"", original)
             }
@@ -670,6 +1277,18 @@ const SUBTRACT_KEYWORDS: &[&str] = &[
 ];
 const MULTIPLY_KEYWORDS: &[&str] = &["multiply", "product", "product of", "times"];
 const DIVIDE_KEYWORDS: &[&str] = &["divide", "quotient", "quotient of", "split", "divide by"];
+const MODULO_KEYWORDS: &[&str] = &["mod", "modulo", "remainder", "remainder of"];
+
+const LOGICAL_AND_KEYWORDS: &[&str] = &["logical and", "and", "both"];
+const LOGICAL_OR_KEYWORDS: &[&str] = &["logical or", "or", "either"];
+const LOGICAL_NOT_KEYWORDS: &[&str] = &["not", "logical not"];
+
+const PRE_IFDEF_KEYWORDS: &[&str] = &["if defined", "ifdef"];
+const PRE_IFNDEF_KEYWORDS: &[&str] = &["if not defined", "ifndef"];
+const PRE_ENDIF_KEYWORDS: &[&str] = &["end if defined", "end ifdef", "endif", "end if not defined"];
+const PRE_UNDEF_KEYWORDS: &[&str] = &["undefine", "undef"];
+const PRE_PRAGMA_KEYWORDS: &[&str] = &["pragma"];
+const PRE_MACRO_KEYWORDS: &[&str] = &["define macro", "macro"];
 
 // ============================================================================
 // Extraction Functions
@@ -677,7 +1296,9 @@ const DIVIDE_KEYWORDS: &[&str] = &["divide", "quotient", "quotient of", "split",
 
 /// Extract structured hints from a translation request.
 pub fn extract(request: &TranslateLineRequest) -> StatementHint {
-    let line = request.english_line.trim();
+    let normalized = crate::synonyms::normalize(request.english_line.trim());
+    let line = normalized.trim();
+    let include_context = VariableContext::from_code(&request.code_before).included_headers;
 
     if line.is_empty() {
         return StatementHint::Unknown {
@@ -715,6 +1336,10 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_arithmetic(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_equals_assignment(line) {
         return hint;
     }
 
@@ -775,6 +1400,10 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
         return hint;
     }
 
+    if let Some(hint) = try_extract_stdlib_call(line, &include_context) {
+        return hint;
+    }
+
     if let Some(hint) = try_extract_include(line) {
         return hint;
     }
@@ -824,6 +1453,58 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_ternary(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_bare_declaration(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_compound_assign(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_logical(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_preprocessor(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_advanced_memory(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_multi_array(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_struct_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_control_flow_ext(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_function_ext(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_file_io(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_string_funcs(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_stdlib_funcs(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_error_handling(line) {
         return hint;
     }
 
@@ -1010,6 +1691,18 @@ fn try_extract_arithmetic(line: &str) -> Option<StatementHint> {
         }
     }
 
+    // Try modulo
+    if let Some(rest) = strip_any_keyword(trimmed, MODULO_KEYWORDS) {
+        if let Some((left, right, target)) = parse_binary_op(rest, &[" by ", " of ", " modulo "]) {
+            return Some(StatementHint::Arithmetic {
+                operation: ArithmeticOp::Modulo,
+                left,
+                right,
+                target,
+            });
+        }
+    }
+
     None
 }
 
@@ -1137,6 +1830,23 @@ fn try_extract_assignment(line: &str) -> Option<StatementHint> {
     None
 }
 
+/// Handle patterns like "x = 5" without keywords.
+fn try_extract_equals_assignment(line: &str) -> Option<StatementHint> {
+    if !line.contains('=') {
+        return None;
+    }
+    let parts: Vec<&str> = line.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let target = sanitize_identifier(parts[0]);
+    let value = parts[1].trim();
+    if target.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some(StatementHint::Assignment { targets: vec![target], value: value.to_string() })
+}
+
 fn is_valid_identifier_token(s: &str) -> bool {
     if s.is_empty() {
         return false;
@@ -1245,7 +1955,10 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
     let article_noise = ["a", "an", "the"];
     // These are always filtered as they are connecting words
     let connecting_noise = ["of", "with", "named", "called", "as", "that", "is", "be", "to"];
-    let type_words = ["int", "integer", "float", "double", "char", "string", "bool", "boolean"];
+    let type_words = [
+        "int", "integer", "float", "double", "char", "string", "bool", "boolean",
+        "long", "short", "unsigned", "signed", "size_t", "long long", "unsigned long", "unsigned int",
+    ];
     
     let tokens: Vec<&str> = text.split_whitespace().collect();
     
@@ -1578,6 +2291,10 @@ fn parse_function_signature(tokens: &[&str]) -> (Vec<(String, String)>, Option<S
         ("string", "char *"), ("strings", "char *"),
         ("bool", "bool"), ("boolean", "bool"),
         ("void", "void"),
+        ("long", "long"), ("short", "short"),
+        ("unsigned", "unsigned"), ("signed", "signed"),
+        ("size_t", "size_t"),
+        ("longlong", "long long"), ("unsignedlong", "unsigned long"),
     ];
     
     let noise = ["taking", "with", "and", "parameters", "parameter", "returning", "returns"];
@@ -1653,6 +2370,8 @@ fn parse_struct_fields(text: &str) -> Vec<(String, String)> {
         ("float", "float"), ("double", "double"),
         ("char", "char"), ("string", "char *"),
         ("bool", "bool"),
+        ("long", "long"), ("short", "short"),
+        ("unsigned", "unsigned"), ("signed", "signed"),
     ];
     
     for chunk in text.split(|c| c == ',' || c == ';').flat_map(|s| s.split(" and ")) {
@@ -1693,15 +2412,190 @@ fn sanitize_identifier(input: &str) -> String {
         .collect()
 }
 
+const GREATER_PATTERNS: &[&str] = &[
+    "is greater than",
+    "greater than",
+    "is bigger than",
+    "bigger than",
+    "is larger than",
+    "larger than",
+    "is more than",
+    "more than",
+    "is higher than",
+    "higher than",
+    "is above",
+    "above",
+    "is over",
+    "over",
+    "exceeds",
+    "is exceeding",
+    "exceeding",
+    "is greater",
+    "greater",
+    "is bigger",
+    "bigger",
+    "is larger",
+    "larger",
+    "is of a bigger size than",
+    "is of a larger size than",
+    "is of greater size than",
+    "is of greater value than",
+    "has more than",
+    "with more than",
+    "is beyond",
+    "beyond",
+    "is of higher value than",
+];
+
+const LESS_PATTERNS: &[&str] = &[
+    "is less than",
+    "less than",
+    "is smaller than",
+    "smaller than",
+    "is lower than",
+    "lower than",
+    "is fewer than",
+    "fewer than",
+    "is below",
+    "below",
+    "is under",
+    "under",
+    "is tinier than",
+    "tinier than",
+    "is beneath",
+    "beneath",
+    "is less",
+    "less",
+    "is smaller",
+    "smaller",
+    "is lower",
+    "lower",
+    "is of a smaller size than",
+    "is of lesser value than",
+    "has less than",
+    "with less than",
+    "is not as much as",
+];
+
+const GE_PATTERNS: &[&str] = &[
+    "is greater than or equal to",
+    "greater than or equal to",
+    "is at least",
+    "at least",
+    "is no less than",
+    "no less than",
+    "is not less than",
+    "not less than",
+    "is bigger than or equal to",
+    "bigger than or equal to",
+    "is larger than or equal to",
+    "larger than or equal to",
+    "is more than or equal to",
+    "more than or equal to",
+    "is greater or equal to",
+    "greater or equal to",
+    ">=",
+];
+
+const LE_PATTERNS: &[&str] = &[
+    "is less than or equal to",
+    "less than or equal to",
+    "is at most",
+    "at most",
+    "is no more than",
+    "no more than",
+    "is not greater than",
+    "not greater than",
+    "is smaller than or equal to",
+    "smaller than or equal to",
+    "is lower than or equal to",
+    "lower than or equal to",
+    "is fewer than or equal to",
+    "fewer than or equal to",
+    "<=",
+];
+
+const EQ_PATTERNS: &[&str] = &[
+    "equals",
+    "is equal to",
+    "equal to",
+    "is same as",
+    "same as",
+    "is equivalent to",
+    "equivalent to",
+    "is identical to",
+    "identical to",
+    "matches",
+    "has the same value as",
+    "is the same as",
+    "==",
+];
+
+const NE_PATTERNS: &[&str] = &[
+    "is not equal to",
+    "is not equal",
+    "is not the same as",
+    "not the same as",
+    "is different from",
+    "different from",
+    "differs from",
+    "is unlike",
+    "unlike",
+    "does not equal",
+    "doesn't equal",
+    "does not match",
+    "is not",
+    "isnt",
+    "isn't",
+    "!=",
+    "<>",
+];
+
+fn build_condition_regex(pattern: &str) -> Regex {
+    let trimmed = pattern.trim();
+    let has_symbol = trimmed
+        .chars()
+        .any(|c| !c.is_alphanumeric() && !c.is_whitespace());
+    let escaped = regex::escape(trimmed);
+    let pat = if has_symbol {
+        format!(r"(?i)\s*{}\s*", escaped)
+    } else {
+        format!(r"(?i)\b{}\b", escaped)
+    };
+    Regex::new(&pat).expect("valid condition pattern")
+}
+
 fn normalize_condition(condition: &str) -> String {
-    condition
-        .replace(" is greater than ", " > ")
-        .replace(" is less than ", " < ")
-        .replace(" equals ", " == ")
-        .replace(" is equal to ", " == ")
-        .replace(" is not equal to ", " != ")
-        .replace(" is not ", " != ")
-        .replace(" is ", " == ")
+    static REPLACERS: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+        let mut v: Vec<(Regex, &'static str)> = Vec::new();
+
+        for pat in GE_PATTERNS {
+            v.push((build_condition_regex(pat), " >= "));
+        }
+        for pat in LE_PATTERNS {
+            v.push((build_condition_regex(pat), " <= "));
+        }
+        for pat in NE_PATTERNS {
+            v.push((build_condition_regex(pat), " != "));
+        }
+        for pat in EQ_PATTERNS {
+            v.push((build_condition_regex(pat), " == "));
+        }
+        for pat in GREATER_PATTERNS {
+            v.push((build_condition_regex(pat), " > "));
+        }
+        for pat in LESS_PATTERNS {
+            v.push((build_condition_regex(pat), " < "));
+        }
+
+        v
+    });
+
+    let mut out = condition.to_string();
+    for (re, replacement) in REPLACERS.iter() {
+        out = re.replace_all(&out, *replacement).into_owned();
+    }
+    out
 }
 
 // ============================================================================
@@ -1860,11 +2754,28 @@ fn try_extract_pointer(line: &str) -> Option<StatementHint> {
     // "pointer to int x" or "int pointer x"
     if let Some(rest) = strip_keyword(line, "pointer to") {
         let tokens: Vec<&str> = rest.split_whitespace().collect();
-        if tokens.len() >= 2 {
-            let base_type = tokens[0].to_string();
-            let name = sanitize_identifier(tokens[1]);
-            if !name.is_empty() {
-                return Some(StatementHint::PointerDecl { base_type, name });
+        if !tokens.is_empty() {
+            let mut idx = 0;
+            // Skip leading "to" if present ("pointer to pointer to int pp" leaves a stray "to")
+            if tokens[0].eq_ignore_ascii_case("to") {
+                idx += 1;
+            }
+            match (tokens.get(idx), tokens.get(idx + 1)) {
+                (Some(ty), Some(name_tok)) => {
+                    let name = sanitize_identifier(name_tok);
+                    let base_type = (*ty).to_string();
+                    if !name.is_empty() {
+                        return Some(StatementHint::PointerDecl { base_type, name });
+                    }
+                }
+                // Only one token → treat as name, default type to int
+                (Some(name_tok), None) => {
+                    let name = sanitize_identifier(name_tok);
+                    if !name.is_empty() {
+                        return Some(StatementHint::PointerDecl { base_type: "int".to_string(), name });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1900,7 +2811,7 @@ fn try_extract_pointer(line: &str) -> Option<StatementHint> {
 }
 
 fn try_extract_memory_ops(line: &str) -> Option<StatementHint> {
-    let lower = line.trim().to_lowercase();
+    let _lower = line.trim().to_lowercase();
     
     // "free p"
     if let Some(rest) = strip_keyword(line, "free") {
@@ -2206,6 +3117,819 @@ fn try_extract_ternary(line: &str) -> Option<StatementHint> {
     None
 }
 
+/// Heuristic: two-token numeric declaration like "a 0" -> int a = 0
+fn try_extract_bare_declaration(line: &str) -> Option<StatementHint> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.len() != 2 {
+        return None;
+    }
+    let name = sanitize_identifier(tokens[0]);
+    if name.is_empty() {
+        return None;
+    }
+    // Require second token to look numeric
+    if !tokens[1].parse::<f64>().is_ok() {
+        return None;
+    }
+    Some(StatementHint::Declaration {
+        names: vec![name],
+        type_hint: Some("int".to_string()),
+        initial_value: Some(tokens[1].to_string()),
+        is_array: false,
+        array_size: None,
+    })
+}
+
+// ============================================================================
+// New extractors (compound ops, logical, preprocessor, memory, arrays, structs,
+// control flow, functions, file IO, strings, stdlib, errors)
+// ============================================================================
+
+fn try_extract_compound_assign(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+
+    // Patterns like "add 5 to x" / "increase x by 5"
+    if lower.starts_with("add ") || lower.starts_with("increase ") {
+        let rest = line.splitn(2, ' ').nth(1)?.trim();
+        if let Some((value, target)) = split_value_target(rest, &[" to ", " into ", " in "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::AddAssign,
+                value,
+            });
+        }
+        if let Some((target, value)) = split_target_value(rest, &[" by "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::AddAssign,
+                value,
+            });
+        }
+    }
+
+    if lower.starts_with("subtract ") || lower.starts_with("decrease ") {
+        let rest = line.splitn(2, ' ').nth(1)?.trim();
+        // "subtract 5 from x"
+        if let Some(idx) = rest.to_lowercase().find(" from ") {
+            let value = rest[..idx].trim().to_string();
+            let target = sanitize_identifier(rest[idx + 6..].trim());
+            if !target.is_empty() && !value.is_empty() {
+                return Some(StatementHint::CompoundAssign {
+                    target,
+                    operator: CompoundOp::SubAssign,
+                    value,
+                });
+            }
+        }
+        if let Some((target, value)) = split_target_value(rest, &[" by "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::SubAssign,
+                value,
+            });
+        }
+    }
+
+    if lower.starts_with("multiply ") {
+        let rest = line.splitn(2, ' ').nth(1)?.trim();
+        if let Some((target, value)) = split_target_value(rest, &[" by "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::MulAssign,
+                value,
+            });
+        }
+    }
+
+    if lower.starts_with("divide ") {
+        let rest = line.splitn(2, ' ').nth(1)?.trim();
+        if let Some((target, value)) = split_target_value(rest, &[" by "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::DivAssign,
+                value,
+            });
+        }
+    }
+
+    if lower.starts_with("mod ") || lower.starts_with("modulo ") {
+        let rest = line.splitn(2, ' ').nth(1)?.trim();
+        if let Some((target, value)) = split_target_value(rest, &[" by ", " with "]) {
+            return Some(StatementHint::CompoundAssign {
+                target,
+                operator: CompoundOp::ModAssign,
+                value,
+            });
+        }
+    }
+
+    // Bitwise compound
+    for (kw, op) in [
+        ("shift", CompoundOp::ShlAssign),
+        ("bitwise and", CompoundOp::AndAssign),
+        ("bitwise or", CompoundOp::OrAssign),
+        ("bitwise xor", CompoundOp::XorAssign),
+    ] {
+        if lower.contains(kw) && lower.contains(" equals ") {
+            let parts: Vec<&str> = lower.split(" equals ").collect();
+            if parts.len() == 2 {
+                let target = sanitize_identifier(parts[0]);
+                let value = parts[1].trim().to_string();
+                if !target.is_empty() && !value.is_empty() {
+                    return Some(StatementHint::CompoundAssign { target, operator: op, value });
+                }
+            }
+        }
+    }
+
+    // Operators like "+=", "-=", "*=", "/=", "%="
+    for (marker, op) in [
+        ("+=", CompoundOp::AddAssign),
+        ("-=", CompoundOp::SubAssign),
+        ("*=", CompoundOp::MulAssign),
+        ("/=", CompoundOp::DivAssign),
+        ("%=", CompoundOp::ModAssign),
+        ("<<=", CompoundOp::ShlAssign),
+        (">>=", CompoundOp::ShrAssign),
+        ("&=", CompoundOp::AndAssign),
+        ("|=", CompoundOp::OrAssign),
+        ("^=", CompoundOp::XorAssign),
+    ] {
+        if let Some(idx) = line.find(marker) {
+            let target = sanitize_identifier(line[..idx].trim());
+            let value = line[idx + marker.len()..].trim().to_string();
+            if !target.is_empty() && !value.is_empty() {
+                return Some(StatementHint::CompoundAssign { target, operator: op, value });
+            }
+        }
+    }
+
+    None
+}
+
+fn split_value_target(text: &str, separators: &[&str]) -> Option<(String, String)> {
+    for sep in separators {
+        if let Some(idx) = text.to_lowercase().find(sep) {
+            let value = text[..idx].trim().to_string();
+            let target = sanitize_identifier(text[idx + sep.len()..].trim());
+            if !value.is_empty() && !target.is_empty() {
+                return Some((value, target));
+            }
+        }
+    }
+    None
+}
+
+fn split_target_value(text: &str, separators: &[&str]) -> Option<(String, String)> {
+    for sep in separators {
+        if let Some(idx) = text.to_lowercase().find(sep) {
+            let target = sanitize_identifier(text[..idx].trim());
+            let value = text[idx + sep.len()..].trim().to_string();
+            if !target.is_empty() && !value.is_empty() {
+                return Some((target, value));
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_logical(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+
+    // not X
+    for kw in LOGICAL_NOT_KEYWORDS {
+        if lower.starts_with(kw) {
+            let expr = line[kw.len()..].trim();
+            if !expr.is_empty() {
+                return Some(StatementHint::Logical {
+                    operation: LogicalOp::Not,
+                    left: expr.to_string(),
+                    right: None,
+                    target: None,
+                });
+            }
+        }
+    }
+
+    for kw in LOGICAL_AND_KEYWORDS {
+        if let Some(idx) = lower.find(&format!(" {} ", kw)) {
+            let left = line[..idx].trim().to_string();
+            let right = line[idx + kw.len() + 2..].trim().to_string();
+            if !left.is_empty() && !right.is_empty() {
+                return Some(StatementHint::Logical {
+                    operation: LogicalOp::And,
+                    left,
+                    right: Some(right),
+                    target: None,
+                });
+            }
+        }
+    }
+
+    for kw in LOGICAL_OR_KEYWORDS {
+        if let Some(idx) = lower.find(&format!(" {} ", kw)) {
+            let left = line[..idx].trim().to_string();
+            let right = line[idx + kw.len() + 2..].trim().to_string();
+            if !left.is_empty() && !right.is_empty() {
+                return Some(StatementHint::Logical {
+                    operation: LogicalOp::Or,
+                    left,
+                    right: Some(right),
+                    target: None,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn try_extract_preprocessor(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+
+    if let Some(rest) = strip_any_keyword(line, PRE_IFDEF_KEYWORDS) {
+        let symbol = sanitize_identifier(rest);
+        if !symbol.is_empty() {
+            return Some(StatementHint::IfDef { symbol });
+        }
+    }
+
+    if let Some(rest) = strip_any_keyword(line, PRE_IFNDEF_KEYWORDS) {
+        let symbol = sanitize_identifier(rest);
+        if !symbol.is_empty() {
+            return Some(StatementHint::IfNDef { symbol });
+        }
+    }
+
+    if PRE_ENDIF_KEYWORDS.iter().any(|k| lower.starts_with(k)) {
+        return Some(StatementHint::EndIf);
+    }
+
+    if let Some(rest) = strip_any_keyword(line, PRE_UNDEF_KEYWORDS) {
+        let symbol = sanitize_identifier(rest);
+        if !symbol.is_empty() {
+            return Some(StatementHint::Undef { symbol });
+        }
+    }
+
+    if let Some(rest) = strip_any_keyword(line, PRE_PRAGMA_KEYWORDS) {
+        let value = rest.trim();
+        if !value.is_empty() {
+            return Some(StatementHint::Pragma { value: value.to_string() });
+        }
+    }
+
+    // Macro functions: "define macro ADD x y as x + y"
+    if let Some(rest) = strip_any_keyword(line, PRE_MACRO_KEYWORDS) {
+        let lower_rest = rest.to_lowercase();
+        if let Some(as_idx) = lower_rest.find(" as ") {
+            let head = rest[..as_idx].trim();
+            let body = rest[as_idx + 4..].trim().to_string();
+            let tokens: Vec<&str> = head.split_whitespace().collect();
+            if !tokens.is_empty() {
+                let name = sanitize_identifier(tokens[0]);
+                let params: Vec<String> = tokens.iter().skip(1).map(|p| sanitize_identifier(p)).filter(|p| !p.is_empty()).collect();
+                if !name.is_empty() && !body.is_empty() {
+                    return Some(StatementHint::MacroFunction { name, params, body });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn try_extract_advanced_memory(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+
+    if lower.starts_with("reallocate ") || lower.starts_with("realloc ") {
+        let rest = strip_any_keyword(line, &["reallocate", "realloc"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let pointer = sanitize_identifier(tokens[0]);
+            let count = tokens[2].to_string();
+            let element_type = tokens.get(3).cloned().unwrap_or("int").to_string();
+            if !pointer.is_empty() {
+                return Some(StatementHint::Realloc { pointer, count, element_type });
+            }
+        }
+    }
+
+    if lower.starts_with("allocate and zero") || lower.starts_with("calloc") {
+        let rest = strip_any_keyword(line, &["allocate and zero", "calloc"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let count = tokens[0].to_string();
+            let element_type = tokens.get(1).cloned().unwrap_or("int").trim_end_matches('s').to_string();
+            return Some(StatementHint::Calloc { count, element_type, target: None });
+        }
+    }
+
+    if lower.contains("pointer to pointer") {
+        let rest = strip_keyword(line, "pointer to pointer")?;
+        let mut tokens: Vec<&str> = rest.split_whitespace().collect();
+        // Skip leading "to" if present ("pointer to pointer to int pp")
+        if !tokens.is_empty() && tokens[0].eq_ignore_ascii_case("to") {
+            tokens.remove(0);
+        }
+        if tokens.len() >= 2 {
+            let base_type = tokens[0].to_string();
+            let name = sanitize_identifier(tokens[1]);
+            if !name.is_empty() {
+                return Some(StatementHint::DoublePointer { base_type, name });
+            }
+        } else if tokens.len() == 1 {
+            // No explicit base type: default to int
+            let name = sanitize_identifier(tokens[0]);
+            if !name.is_empty() {
+                return Some(StatementHint::DoublePointer { base_type: "int".to_string(), name });
+            }
+        }
+    }
+
+    if lower.starts_with("function pointer") {
+        let rest = strip_keyword(line, "function pointer")?;
+        let mut tokens = rest.split_whitespace();
+        let mut return_type = tokens.next().unwrap_or("int").to_string();
+        if return_type == "returning" {
+            return_type = tokens.next().unwrap_or("int").to_string();
+        }
+        let name = sanitize_identifier(tokens.next().unwrap_or("fp"));
+        let params: Vec<String> = tokens.map(|t| sanitize_identifier(t)).filter(|t| !t.is_empty()).collect();
+        if !name.is_empty() {
+            return Some(StatementHint::FunctionPointer { return_type, name, params });
+        }
+    }
+
+    if lower.contains("move pointer") || lower.contains("advance pointer") {
+        let rest = strip_any_keyword(line, &["move pointer", "advance pointer"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let pointer = sanitize_identifier(tokens[0]);
+            let direction_word = tokens[1].to_lowercase();
+            let offset = tokens[2].to_string();
+            let direction = if direction_word.starts_with("back") || direction_word.starts_with("prev") {
+                PointerDir::Backward
+            } else {
+                PointerDir::Forward
+            };
+            if !pointer.is_empty() && !offset.is_empty() {
+                return Some(StatementHint::PointerArithmetic { pointer, offset, direction });
+            }
+        }
+    }
+
+    if lower.starts_with("set ") && lower.contains(" to null") {
+        let rest = strip_keyword(line, "set")?;
+        let target = sanitize_identifier(rest.trim_end_matches("to null").trim());
+        if !target.is_empty() {
+            return Some(StatementHint::NullAssign { target });
+        }
+    }
+
+    None
+}
+
+fn try_extract_multi_array(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.contains(" array ") && lower.contains(" by ") {
+        // e.g., "2d array arr 10 by 20" or "array matrix 3 by 4"
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let name = tokens.iter().find(|t| !t.to_lowercase().contains("array") && t.chars().all(|c| c.is_ascii_alphanumeric() || c=='_'))?;
+        let mut dims = Vec::new();
+        let mut iter = tokens.iter().peekable();
+        while let Some(tok) = iter.next() {
+            if tok.to_lowercase() == "by" {
+                if let Some(dim) = iter.next() {
+                    dims.push(dim.to_string());
+                }
+            } else if tok.parse::<i32>().is_ok() && iter.peek().map(|x| x.to_lowercase()=="by").unwrap_or(false) {
+                dims.push(tok.to_string());
+            }
+        }
+        if !dims.is_empty() {
+            return Some(StatementHint::MultiArrayDecl {
+                type_hint: None,
+                name: sanitize_identifier(name),
+                dimensions: dims,
+            });
+        }
+    }
+
+    // array init: "array a with values 1 2 3"
+    if lower.starts_with("array ") && lower.contains(" with ") {
+        let rest = strip_keyword(line, "array")?;
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" with ") {
+            let name = sanitize_identifier(rest[..idx].trim());
+            let values: Vec<String> = rest[idx + 6..].split(|c| c==',' || c==' ').map(|v| v.trim()).filter(|v| !v.is_empty() && v != &"values").map(|v| v.to_string()).collect();
+            if !name.is_empty() && !values.is_empty() {
+                return Some(StatementHint::ArrayInit { type_hint: None, name, values });
+            }
+        }
+    }
+
+    // multidim access: "get matrix at i j", "set matrix at i j to v"
+    if lower.starts_with("get ") || lower.starts_with("set ") {
+        let is_set = lower.starts_with("set ");
+        let rest = if is_set { &line[4..] } else { &line[4..] };
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" at ") {
+            let array = sanitize_identifier(rest[..idx].trim());
+            let after = &rest[idx + 4..];
+            let parts: Vec<&str> = after.split_whitespace().collect();
+            if parts.len() >= 1 {
+                let mut indices = Vec::new();
+                for p in &parts {
+                    if *p == "to" {
+                        break;
+                    }
+                    indices.push(p.to_string());
+                }
+                let value = if is_set {
+                    if let Some(to_idx) = lower_rest.find(" to ") {
+                        Some(rest[to_idx + 4..].trim().to_string())
+                    } else { None }
+                } else { None };
+                if !array.is_empty() && !indices.is_empty() {
+                    return Some(StatementHint::MultiDimAccess { array, indices, value });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn try_extract_struct_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+
+    if lower.contains(" dot ") {
+        let parts: Vec<&str> = line.splitn(2, " dot ").collect();
+        if parts.len() == 2 {
+            let object = sanitize_identifier(parts[0]);
+            let field = sanitize_identifier(parts[1]);
+            if !object.is_empty() && !field.is_empty() {
+                return Some(StatementHint::StructAccess { object, field });
+            }
+        }
+    }
+
+    if lower.contains(" arrow ") || lower.contains(" -> ") {
+        if let Some(idx) = lower.find("->") {
+            let object = sanitize_identifier(line[..idx].trim());
+            let field = sanitize_identifier(line[idx+2..].trim());
+            if !object.is_empty() && !field.is_empty() {
+                return Some(StatementHint::StructArrow { pointer: object, field });
+            }
+        } else if let Some(idx) = lower.find(" arrow ") {
+            let object = sanitize_identifier(line[..idx].trim());
+            let field = sanitize_identifier(line[idx+7..].trim());
+            if !object.is_empty() && !field.is_empty() {
+                return Some(StatementHint::StructArrow { pointer: object, field });
+            }
+        }
+    }
+
+    if lower.starts_with("initialize ") || lower.starts_with("init ") {
+        let rest = strip_any_keyword(line, &["initialize", "init"])?;
+        let lower_rest = rest.to_lowercase();
+        let mut struct_name = "";
+        let mut var_name = "";
+        let mut fields_part = "";
+        if let Some(idx) = lower_rest.find(" with ") {
+            struct_name = rest[..idx].trim();
+            fields_part = &rest[idx + 6..];
+            let name_tokens: Vec<&str> = struct_name.split_whitespace().collect();
+            if name_tokens.len() >= 2 {
+                struct_name = name_tokens[0];
+                var_name = name_tokens[1];
+            }
+        } else {
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if tokens.len() >= 2 {
+                struct_name = tokens[0];
+                var_name = tokens[1];
+            }
+        }
+        let fields = parse_struct_init_fields(fields_part);
+        let struct_name = sanitize_identifier(struct_name);
+        let var_name = sanitize_identifier(var_name);
+        if !struct_name.is_empty() && !var_name.is_empty() {
+            return Some(StatementHint::StructInit { struct_name, var_name, fields });
+        }
+    }
+
+    if lower.starts_with("union ") {
+        let rest = strip_keyword(line, "union")?;
+        let lower_rest = rest.to_lowercase();
+        let mut name_part = rest;
+        let mut fields_part = "";
+        if let Some(idx) = lower_rest.find(" with ") {
+            name_part = &rest[..idx];
+            fields_part = &rest[idx + 6..];
+        }
+        let name = sanitize_identifier(name_part.trim());
+        let fields = parse_struct_fields(fields_part);
+        if !name.is_empty() {
+            return Some(StatementHint::UnionDef { name, fields });
+        }
+    }
+
+    if lower.starts_with("array of ") && lower.contains(" structs") {
+        let rest = &line[9..];
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let size = tokens[0].to_string();
+            let struct_name = sanitize_identifier(tokens[2]);
+            let var_name = if tokens.len() > 3 { sanitize_identifier(tokens[3]) } else { format!("{}_arr", struct_name) };
+            if !struct_name.is_empty() {
+                return Some(StatementHint::StructArray { struct_name, var_name, size });
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_struct_init_fields(text: &str) -> Vec<(String, String)> {
+    text.split(|c| c == ',' || c == ';')
+        .flat_map(|chunk| chunk.split(" and "))
+        .filter_map(|pair| {
+            let tokens: Vec<&str> = pair.trim().split_whitespace().collect();
+            if tokens.len() >= 2 {
+                let name = sanitize_identifier(tokens[0]);
+                let value = tokens[1..].join(" ");
+                if !name.is_empty() && !value.is_empty() {
+                    return Some((name, value));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+fn try_extract_control_flow_ext(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    if lower.starts_with("goto ") {
+        let label = sanitize_identifier(&line[5..]);
+        if !label.is_empty() {
+            return Some(StatementHint::Goto { label });
+        }
+    }
+    if lower.starts_with("label ") {
+        let name = sanitize_identifier(&line[6..]);
+        if !name.is_empty() {
+            return Some(StatementHint::Label { name });
+        }
+    }
+    if lower.contains("infinite loop") {
+        return Some(StatementHint::InfiniteLoop);
+    }
+    if lower.contains("loop forever") || lower.contains("forever loop") {
+        return Some(StatementHint::ForEver);
+    }
+    None
+}
+
+fn try_extract_function_ext(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("declare function") || lower.starts_with("function prototype") {
+        let rest = strip_any_keyword(line, &["declare function", "function prototype"])?;
+        let (params, ret) = parse_function_signature(&rest.split_whitespace().skip(1).collect::<Vec<&str>>());
+        let name = sanitize_identifier(rest.split_whitespace().next().unwrap_or("func"));
+        if !name.is_empty() {
+            return Some(StatementHint::FunctionPrototype { name, parameters: params, return_type: ret });
+        }
+    }
+
+    for qualifier in ["inline", "static", "extern"] {
+        if lower.starts_with(&format!("{} function", qualifier)) {
+            let rest = line[qualifier.len() + 9..].trim();
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            if !tokens.is_empty() {
+                let name = sanitize_identifier(tokens[0]);
+                let (params, ret) = parse_function_signature(&tokens[1..]);
+                return Some(StatementHint::QualifiedFunction {
+                    qualifier: qualifier.to_string(),
+                    name,
+                    parameters: params,
+                    return_type: ret,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn try_extract_file_io(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("open file") {
+        let rest = line[9..].trim();
+        let mut parts = rest.split(" for ");
+        let path_part = parts.next()?.trim();
+        let mode_part = parts.next().unwrap_or("r");
+        let mut into_var = "fp".to_string();
+        if let Some(idx) = mode_part.to_lowercase().find(" into ") {
+            let mode = mode_part[..idx].trim().to_string();
+            into_var = sanitize_identifier(mode_part[idx + 6..].trim());
+            return Some(StatementHint::FileOpen { var_name: into_var, path: path_part.trim_matches('"').to_string(), mode });
+        }
+        return Some(StatementHint::FileOpen { var_name: into_var, path: path_part.trim_matches('"').to_string(), mode: mode_part.to_string() });
+    } else if lower.starts_with("close file") {
+        let var_name = sanitize_identifier(line[10..].trim());
+        if !var_name.is_empty() {
+            return Some(StatementHint::FileClose { var_name });
+        }
+    } else if lower.starts_with("read from") {
+        let rest = line[9..].trim();
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 4 {
+            let var_name = sanitize_identifier(tokens[0]);
+            let buffer = sanitize_identifier(tokens[2]);
+            let size = tokens[3].to_string();
+            return Some(StatementHint::FileRead { var_name, buffer, size });
+        }
+    } else if lower.starts_with("write") && lower.contains(" to ") {
+        let rest = line[5..].trim();
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" to ") {
+            let buffer = sanitize_identifier(rest[..idx].trim());
+            let file = sanitize_identifier(rest[idx + 4..].trim());
+            if !buffer.is_empty() && !file.is_empty() {
+                return Some(StatementHint::FileWrite { var_name: file, buffer, size: "n".to_string() });
+            }
+        }
+    } else if lower.starts_with("read line from") {
+        let rest = line[14..].trim();
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 4 {
+            let var_name = sanitize_identifier(tokens[0]);
+            let buffer = sanitize_identifier(tokens[2]);
+            let size = tokens[3].to_string();
+            return Some(StatementHint::Fgets { buffer, size, var_name });
+        }
+    } else if lower.starts_with("write string") {
+        let rest = line[12..].trim();
+        if let Some(idx) = rest.to_lowercase().find(" to ") {
+            let content = rest[..idx].trim().trim_matches('"').to_string();
+            let var_name = sanitize_identifier(rest[idx + 4..].trim());
+            return Some(StatementHint::Fputs { content, var_name });
+        }
+    } else if lower.starts_with("print to file") || lower.starts_with("fprintf") {
+        let rest = strip_any_keyword(line, &["print to file", "fprintf"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let var_name = sanitize_identifier(tokens[0]);
+            let format = rest.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+            return Some(StatementHint::Fprintf { var_name, format, args: Vec::new() });
+        }
+    } else if lower.starts_with("read from file") || lower.starts_with("fscanf") {
+        let rest = strip_any_keyword(line, &["read from file", "fscanf"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let var_name = sanitize_identifier(tokens[0]);
+            let args: Vec<String> = tokens.iter().skip(1).map(|s| sanitize_identifier(s)).filter(|s| !s.is_empty()).collect();
+            return Some(StatementHint::Fscanf { var_name, args });
+        }
+    }
+    None
+}
+
+fn try_extract_string_funcs(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("copy string") || lower.starts_with("strcpy") {
+        let rest = strip_any_keyword(line, &["copy string", "strcpy"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            return Some(StatementHint::Strcpy { dest: sanitize_identifier(tokens[1]), src: sanitize_identifier(tokens[0]) });
+        }
+    }
+    if lower.starts_with("copy") && lower.contains(" chars from") {
+        let rest = line[4..].trim();
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 4 {
+            return Some(StatementHint::Strncpy {
+                dest: sanitize_identifier(tokens[3]),
+                src: sanitize_identifier(tokens[1]),
+                count: tokens[0].to_string(),
+            });
+        }
+    }
+    if lower.starts_with("concatenate") || lower.starts_with("strcat") {
+        let rest = strip_any_keyword(line, &["concatenate", "strcat"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            return Some(StatementHint::Strcat { dest: sanitize_identifier(tokens[1]), src: sanitize_identifier(tokens[0]) });
+        }
+    }
+    if lower.starts_with("compare strings") || lower.starts_with("strcmp") {
+        let rest = strip_any_keyword(line, &["compare strings", "strcmp"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            return Some(StatementHint::Strcmp {
+                left: sanitize_identifier(tokens[0]),
+                right: sanitize_identifier(tokens[1]),
+                target: None,
+            });
+        }
+    }
+    if lower.starts_with("length of string") || lower.starts_with("strlen") {
+        let rest = strip_any_keyword(line, &["length of string", "strlen"])?;
+        let target = sanitize_identifier(rest);
+        if !target.is_empty() {
+            return Some(StatementHint::Strlen { target, store_in: None });
+        }
+    }
+    if lower.starts_with("format into string") || lower.starts_with("sprintf") {
+        let rest = strip_any_keyword(line, &["format into string", "sprintf"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let buffer = sanitize_identifier(tokens[0]);
+            let format = rest.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+            return Some(StatementHint::Sprintf { buffer, format, args: Vec::new() });
+        }
+    }
+    None
+}
+
+fn try_extract_stdlib_funcs(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("copy bytes") || lower.starts_with("memcpy") {
+        let rest = strip_any_keyword(line, &["copy bytes", "memcpy"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            return Some(StatementHint::Memcpy {
+                dest: sanitize_identifier(tokens[2]),
+                src: sanitize_identifier(tokens[1]),
+                size: tokens[0].to_string(),
+            });
+        }
+    }
+    if lower.starts_with("set bytes") || lower.starts_with("memset") {
+        let rest = strip_any_keyword(line, &["set bytes", "memset"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            return Some(StatementHint::Memset {
+                dest: sanitize_identifier(tokens[0]),
+                value: tokens[1].to_string(),
+                size: tokens[2].to_string(),
+            });
+        }
+    }
+    if lower.starts_with("exit program") || lower.starts_with("exit with") {
+        let code = line.split_whitespace().last().unwrap_or("0").to_string();
+        return Some(StatementHint::Exit { code });
+    }
+    if lower.starts_with("random number") || lower.starts_with("rand") {
+        return Some(StatementHint::Rand { store_in: None });
+    }
+
+    for (kw, kind) in [
+        ("square root of", MathFuncKind::Sqrt),
+        ("sqrt", MathFuncKind::Sqrt),
+        ("power", MathFuncKind::Pow),
+        ("pow", MathFuncKind::Pow),
+        ("absolute value", MathFuncKind::Abs),
+        ("abs", MathFuncKind::Abs),
+        ("sin", MathFuncKind::Sin),
+        ("cos", MathFuncKind::Cos),
+        ("tan", MathFuncKind::Tan),
+        ("exp", MathFuncKind::Exp),
+        ("log", MathFuncKind::Log),
+    ] {
+        if lower.starts_with(kw) {
+            let args: Vec<String> = line[kw.len()..].split_whitespace().map(|s| s.to_string()).collect();
+            return Some(StatementHint::MathFunc { func: kind, args, store_in: None });
+        }
+    }
+
+    None
+}
+
+fn try_extract_error_handling(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("assert ") {
+        return Some(StatementHint::Assert { expression: line[7..].trim().to_string() });
+    }
+    if lower.starts_with("perror") || lower.starts_with("print error") {
+        let msg = line.split_whitespace().skip(2).collect::<Vec<&str>>().join(" ");
+        let message = if msg.is_empty() { None } else { Some(msg) };
+        return Some(StatementHint::Perror { message });
+    }
+    if lower.contains("errno") {
+        return Some(StatementHint::ErrnoCheck);
+    }
+    None
+}
+
+fn try_extract_stdlib_call(line: &str, included_headers: &std::collections::HashSet<String>) -> Option<StatementHint> {
+    let db = FunctionDatabase::core();
+    let FunctionMatch { name, args } = match_function_call(line, included_headers, db)?;
+    Some(StatementHint::StdLibCall { name, args })
+}
+
 // ============================================================================
 // Context Analysis - Variable Declaration Tracking
 // ============================================================================
@@ -2218,6 +3942,8 @@ use std::collections::HashSet;
 pub struct VariableContext {
     /// Set of declared variable names
     pub declared: HashSet<String>,
+    /// Headers that were included before the current line
+    pub included_headers: HashSet<String>,
 }
 
 impl VariableContext {
@@ -2225,18 +3951,26 @@ impl VariableContext {
     pub fn new() -> Self {
         Self {
             declared: HashSet::new(),
+            included_headers: HashSet::new(),
         }
     }
 
     /// Extract declared variables from preceding code
     pub fn from_code(code_before: &str) -> Self {
         let mut declared = HashSet::new();
+        let mut included_headers = HashSet::new();
         
         for line in code_before.lines() {
             let trimmed = line.trim();
             
             // Skip empty lines and comments
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                continue;
+            }
+
+            // Track includes
+            if let Some(header) = parse_include_line(trimmed) {
+                included_headers.insert(header);
                 continue;
             }
             
@@ -2303,7 +4037,7 @@ impl VariableContext {
             }
         }
         
-        Self { declared }
+        Self { declared, included_headers }
     }
 
     /// Check if a variable is declared
@@ -2315,6 +4049,20 @@ impl VariableContext {
     pub fn get_declared(&self) -> Vec<String> {
         self.declared.iter().cloned().collect()
     }
+}
+
+fn parse_include_line(line: &str) -> Option<String> {
+    if !line.starts_with("#include") {
+        return None;
+    }
+    let rest = line.trim_start_matches("#include").trim();
+    if rest.starts_with('<') && rest.ends_with('>') {
+        return Some(rest.trim_matches(['<', '>'].as_ref()).to_string());
+    }
+    if rest.starts_with('"') && rest.ends_with('"') {
+        return Some(rest.trim_matches('"').to_string());
+    }
+    None
 }
 
 /// Check if a string is a valid C identifier
@@ -2515,7 +4263,9 @@ pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
             // without requiring a and b to be declared first.
             ReadWriteInfo::default()
         }
-        
+
+        StatementHint::StdLibCall { .. } => ReadWriteInfo::default(),
+
         _ => ReadWriteInfo::default(),
     }
 }
