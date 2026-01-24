@@ -21,6 +21,7 @@ pub enum StatementHint {
     Declaration {
         names: Vec<String>,
         type_hint: Option<String>,
+        qualifiers: Vec<String>,
         initial_value: Option<String>,
         is_array: bool,
         array_size: Option<String>,
@@ -92,6 +93,13 @@ pub enum StatementHint {
         delta: i32, // +1 or -1
     },
 
+    /// Pre/post increment/decrement: "pre increment x", "post decrement i"
+    PrePostModify {
+        target: String,
+        delta: i32, // +1 or -1
+        position: IncDecPosition,
+    },
+
     /// Function definition: "function foo taking int x"
     FunctionDef {
         name: String,
@@ -103,6 +111,13 @@ pub enum StatementHint {
     StructDef {
         name: String,
         fields: Vec<(String, String)>, // (type, name)
+    },
+
+    /// Bitfield declaration: "flag 1 bit unsigned"
+    BitfieldDecl {
+        name: String,
+        type_hint: Option<String>,
+        width: String,
     },
 
     /// Main entry point: "create main", "entry point"
@@ -308,6 +323,17 @@ pub enum StatementHint {
         name: String,
         values: Vec<String>,
     },
+    DesignatedInit {
+        type_hint: Option<String>,
+        name: String,
+        designators: Vec<(String, String)>,
+    },
+    CompoundLiteral {
+        type_hint: String,
+        values: Vec<String>,
+        fields: Vec<(String, String)>,
+        is_array: bool,
+    },
     MultiDimAccess {
         array: String,
         indices: Vec<String>,
@@ -328,8 +354,16 @@ pub enum StatementHint {
         var_name: String,
         fields: Vec<(String, String)>,
     },
+    AnonymousStruct {
+        parent: Option<String>,
+        fields: Vec<(String, String)>,
+    },
     UnionDef {
         name: String,
+        fields: Vec<(String, String)>,
+    },
+    AnonymousUnion {
+        parent: Option<String>,
         fields: Vec<(String, String)>,
     },
     StructArray {
@@ -419,10 +453,142 @@ pub enum StatementHint {
     Perror { message: Option<String> },
     ErrnoCheck,
 
+    /// Extended error handling
+    TryBlock,
+    ExceptBlock { exception_type: Option<String>, variable: Option<String> },
+    FinallyBlock,
+    RaiseException { exception_type: String, message: Option<String> },
+    ErrorCheck { function_call: String, error_variable: Option<String> },
+    SetJmp { buffer: String },
+    LongJmp { buffer: String, value: String },
+
+    /// Testing
+    TestFunction { name: String, description: Option<String> },
+    TestAssert { expression: String, message: Option<String> },
+    TestAssertEqual { left: String, right: String, message: Option<String> },
+    TestAssertNotEqual { left: String, right: String },
+    TestAssertTrue { expression: String },
+    TestAssertFalse { expression: String },
+    TestSetup { name: String },
+    TestTeardown { name: String },
+    MockFunction { name: String, return_value: String },
+
+    /// Advanced control flow
+    LabeledBreak { label: String },
+    LabeledContinue { label: String },
+    LabeledLoop { label: String, loop_hint: Box<StatementHint> },
+    MatchBlock { expression: String },
+    MatchCase { pattern: String, guard: Option<String>, action: Option<String> },
+    MatchWildcard { action: Option<String> },
+    GuardClause { condition: String, action: String },
+    ConditionalChain { conditions: Vec<(String, String)>, else_action: Option<String> },
+
+    /// Data structures
+    LinkedListCreate { name: String, element_type: Option<String> },
+    LinkedListInsert { list: String, value: String, position: Option<String> },
+    LinkedListRemove { list: String, position: String },
+    LinkedListTraverse { list: String, iterator: String },
+    StackCreate { name: String, element_type: Option<String> },
+    StackPush { stack: String, value: String },
+    StackPop { stack: String, target: Option<String> },
+    StackPeek { stack: String, target: Option<String> },
+    StackIsEmpty { stack: String },
+    QueueCreate { name: String, element_type: Option<String> },
+    QueueEnqueue { queue: String, value: String },
+    QueueDequeue { queue: String, target: Option<String> },
+    MapCreate { name: String, key_type: Option<String>, value_type: Option<String> },
+    MapPut { map: String, key: String, value: String },
+    MapGet { map: String, key: String, target: Option<String> },
+    MapRemove { map: String, key: String },
+    MapContainsKey { map: String, key: String },
+    MapKeys { map: String, target: Option<String> },
+    MapValues { map: String, target: Option<String> },
+    SetCreate { name: String, element_type: Option<String> },
+    SetAdd { set: String, value: String },
+    SetRemove { set: String, value: String },
+    SetContains { set: String, value: String },
+    SetUnion { set1: String, set2: String, target: String },
+    SetIntersection { set1: String, set2: String, target: String },
+    TreeNode { name: String, value: String, left: Option<String>, right: Option<String> },
+    TreeInsert { tree: String, value: String },
+    TreeSearch { tree: String, value: String },
+    TreeTraverse { tree: String, order: String },
+
+    /// OOP constructs
+    ClassDef { name: String, parent: Option<String>, interfaces: Vec<String>, is_abstract: bool },
+    ClassField { name: String, type_hint: Option<String>, visibility: Visibility, is_static: bool, initial_value: Option<String> },
+    ClassMethod { name: String, parameters: Vec<(String, String)>, return_type: Option<String>, visibility: Visibility, is_static: bool, is_abstract: bool, is_virtual: bool },
+    Constructor { parameters: Vec<(String, String)>, body: Option<String> },
+    Destructor { body: Option<String> },
+    InterfaceDef { name: String, extends: Vec<String> },
+    InterfaceMethod { name: String, parameters: Vec<(String, String)>, return_type: Option<String> },
+    ObjectCreate { class_name: String, variable: String, arguments: Vec<String> },
+    MethodCall { object: String, method: String, arguments: Vec<String> },
+    PropertyAccess { object: String, property: String },
+    PropertyAssign { object: String, property: String, value: String },
+    SuperCall { method: Option<String>, arguments: Vec<String> },
+    ThisReference,
+
+    /// Lambdas and higher-order functions
+    Lambda { parameters: Vec<String>, body: String, captures: Vec<String> },
+    HigherOrderFunction { function: String, callback: String, collection: Option<String> },
+    MapFunction { collection: String, transform: String, target: Option<String> },
+    FilterFunction { collection: String, predicate: String, target: Option<String> },
+    ReduceFunction { collection: String, reducer: String, initial: Option<String>, target: Option<String> },
+    ForEachFunction { collection: String, action: String },
+
+    /// Concurrency primitives
+    ThreadCreate { name: Option<String>, function: String, arguments: Vec<String> },
+    ThreadJoin { thread: String },
+    ThreadDetach { thread: String },
+    ThreadSleep { duration: String, unit: String },
+    MutexCreate { name: String },
+    MutexLock { mutex: String },
+    MutexUnlock { mutex: String },
+    MutexTryLock { mutex: String },
+    SemaphoreCreate { name: String, initial: String },
+    SemaphoreWait { semaphore: String },
+    SemaphoreSignal { semaphore: String },
+    ConditionCreate { name: String },
+    ConditionWait { condition: String, mutex: String },
+    ConditionSignal { condition: String },
+    ConditionBroadcast { condition: String },
+    AtomicCreate { name: String, initial: String },
+    AtomicLoad { atomic: String, target: Option<String> },
+    AtomicStore { atomic: String, value: String },
+    AtomicCompareExchange { atomic: String, expected: String, desired: String },
+    AtomicIncrement { atomic: String },
+    AtomicDecrement { atomic: String },
+
+    /// Async/await patterns
+    AsyncFunction { name: String, parameters: Vec<(String, String)>, return_type: Option<String> },
+    AwaitExpression { expression: String, target: Option<String> },
+    PromiseCreate { name: String, executor: String },
+    PromiseThen { promise: String, handler: String },
+    PromiseCatch { promise: String, handler: String },
+    PromiseAll { promises: Vec<String>, target: String },
+    PromiseRace { promises: Vec<String>, target: String },
+
+    /// Documentation
+    DocComment { text: String, doc_type: DocType },
+    DocFunction { brief: String, params: Vec<(String, String)>, returns: Option<String>, throws: Vec<String>, examples: Vec<String> },
+    DocClass { brief: String, detailed: Option<String>, author: Option<String>, version: Option<String> },
+
     /// Standard library call resolved via include + function registry
     StdLibCall {
         name: String,
         args: Vec<String>,
+    },
+
+    /// Static assertion: "static assert x == y"
+    StaticAssert {
+        condition: String,
+        message: Option<String>,
+    },
+
+    /// Comma operator expression sequence
+    CommaExpression {
+        expressions: Vec<String>,
     },
 
     /// Unknown - AI handles without specific hints
@@ -452,6 +618,14 @@ pub enum ArithmeticOp {
     Multiply,
     Divide,
     Modulo,
+}
+
+/// Pre/post increment/decrement position.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IncDecPosition {
+    Pre,
+    Post,
 }
 
 /// Compound assignment types.
@@ -501,6 +675,26 @@ pub enum MathFuncKind {
     Log,
 }
 
+/// Visibility modifiers.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    Public,
+    Private,
+    Protected,
+}
+
+/// Documentation comment types.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocType {
+    Brief,
+    Detailed,
+    Param,
+    Return,
+    Throws,
+}
+
 impl StatementHint {
     /// Returns true if this hint represents a trivial/simple construct
     /// that can be handled without AI.
@@ -511,6 +705,7 @@ impl StatementHint {
             // Basic operations
             StatementHint::Assignment { .. } => true,
             StatementHint::Modify { .. } => true,
+            StatementHint::PrePostModify { .. } => true,
             StatementHint::Return { .. } => true,
             StatementHint::Print { .. } => true,
             StatementHint::Arithmetic { .. } => true,
@@ -548,6 +743,7 @@ impl StatementHint {
             StatementHint::EnumDef { .. } => true,
             StatementHint::Typedef { .. } => true,
             StatementHint::StringDecl { .. } => true,
+            StatementHint::BitfieldDecl { .. } => true,
             // Comments
             StatementHint::Comment { .. } => true,
             // Operations
@@ -573,11 +769,15 @@ impl StatementHint {
             StatementHint::NullAssign { .. } => true,
             StatementHint::MultiArrayDecl { .. } => true,
             StatementHint::ArrayInit { .. } => true,
+            StatementHint::DesignatedInit { .. } => true,
+            StatementHint::CompoundLiteral { .. } => true,
             StatementHint::MultiDimAccess { .. } => true,
             StatementHint::StructAccess { .. } => true,
             StatementHint::StructArrow { .. } => true,
             StatementHint::StructInit { .. } => true,
+            StatementHint::AnonymousStruct { .. } => true,
             StatementHint::UnionDef { .. } => true,
+            StatementHint::AnonymousUnion { .. } => true,
             StatementHint::StructArray { .. } => true,
             StatementHint::Goto { .. } => true,
             StatementHint::Label { .. } => true,
@@ -608,6 +808,111 @@ impl StatementHint {
             StatementHint::Perror { .. } => true,
             StatementHint::ErrnoCheck => true,
             StatementHint::StdLibCall { .. } => true,
+            StatementHint::StaticAssert { .. } => true,
+            StatementHint::CommaExpression { .. } => true,
+            StatementHint::TryBlock => true,
+            StatementHint::ExceptBlock { .. } => true,
+            StatementHint::FinallyBlock => true,
+            StatementHint::RaiseException { .. } => true,
+            StatementHint::ErrorCheck { .. } => true,
+            StatementHint::SetJmp { .. } => true,
+            StatementHint::LongJmp { .. } => true,
+            StatementHint::TestFunction { .. } => true,
+            StatementHint::TestAssert { .. } => true,
+            StatementHint::TestAssertEqual { .. } => true,
+            StatementHint::TestAssertNotEqual { .. } => true,
+            StatementHint::TestAssertTrue { .. } => true,
+            StatementHint::TestAssertFalse { .. } => true,
+            StatementHint::TestSetup { .. } => true,
+            StatementHint::TestTeardown { .. } => true,
+            StatementHint::MockFunction { .. } => true,
+            StatementHint::LabeledBreak { .. } => true,
+            StatementHint::LabeledContinue { .. } => true,
+            StatementHint::LabeledLoop { .. } => true,
+            StatementHint::MatchBlock { .. } => true,
+            StatementHint::MatchCase { .. } => true,
+            StatementHint::MatchWildcard { .. } => true,
+            StatementHint::GuardClause { .. } => true,
+            StatementHint::ConditionalChain { .. } => true,
+            StatementHint::LinkedListCreate { .. } => true,
+            StatementHint::LinkedListInsert { .. } => true,
+            StatementHint::LinkedListRemove { .. } => true,
+            StatementHint::LinkedListTraverse { .. } => true,
+            StatementHint::StackCreate { .. } => true,
+            StatementHint::StackPush { .. } => true,
+            StatementHint::StackPop { .. } => true,
+            StatementHint::StackPeek { .. } => true,
+            StatementHint::StackIsEmpty { .. } => true,
+            StatementHint::QueueCreate { .. } => true,
+            StatementHint::QueueEnqueue { .. } => true,
+            StatementHint::QueueDequeue { .. } => true,
+            StatementHint::MapCreate { .. } => true,
+            StatementHint::MapPut { .. } => true,
+            StatementHint::MapGet { .. } => true,
+            StatementHint::MapRemove { .. } => true,
+            StatementHint::MapContainsKey { .. } => true,
+            StatementHint::MapKeys { .. } => true,
+            StatementHint::MapValues { .. } => true,
+            StatementHint::SetCreate { .. } => true,
+            StatementHint::SetAdd { .. } => true,
+            StatementHint::SetRemove { .. } => true,
+            StatementHint::SetContains { .. } => true,
+            StatementHint::SetUnion { .. } => true,
+            StatementHint::SetIntersection { .. } => true,
+            StatementHint::TreeNode { .. } => true,
+            StatementHint::TreeInsert { .. } => true,
+            StatementHint::TreeSearch { .. } => true,
+            StatementHint::TreeTraverse { .. } => true,
+            StatementHint::ClassDef { .. } => true,
+            StatementHint::ClassField { .. } => true,
+            StatementHint::ClassMethod { .. } => true,
+            StatementHint::Constructor { .. } => true,
+            StatementHint::Destructor { .. } => true,
+            StatementHint::InterfaceDef { .. } => true,
+            StatementHint::InterfaceMethod { .. } => true,
+            StatementHint::ObjectCreate { .. } => true,
+            StatementHint::MethodCall { .. } => true,
+            StatementHint::PropertyAccess { .. } => true,
+            StatementHint::PropertyAssign { .. } => true,
+            StatementHint::SuperCall { .. } => true,
+            StatementHint::ThisReference => true,
+            StatementHint::Lambda { .. } => true,
+            StatementHint::HigherOrderFunction { .. } => true,
+            StatementHint::MapFunction { .. } => true,
+            StatementHint::FilterFunction { .. } => true,
+            StatementHint::ReduceFunction { .. } => true,
+            StatementHint::ForEachFunction { .. } => true,
+            StatementHint::ThreadCreate { .. } => true,
+            StatementHint::ThreadJoin { .. } => true,
+            StatementHint::ThreadDetach { .. } => true,
+            StatementHint::ThreadSleep { .. } => true,
+            StatementHint::MutexCreate { .. } => true,
+            StatementHint::MutexLock { .. } => true,
+            StatementHint::MutexUnlock { .. } => true,
+            StatementHint::MutexTryLock { .. } => true,
+            StatementHint::SemaphoreCreate { .. } => true,
+            StatementHint::SemaphoreWait { .. } => true,
+            StatementHint::SemaphoreSignal { .. } => true,
+            StatementHint::ConditionCreate { .. } => true,
+            StatementHint::ConditionWait { .. } => true,
+            StatementHint::ConditionSignal { .. } => true,
+            StatementHint::ConditionBroadcast { .. } => true,
+            StatementHint::AtomicCreate { .. } => true,
+            StatementHint::AtomicLoad { .. } => true,
+            StatementHint::AtomicStore { .. } => true,
+            StatementHint::AtomicCompareExchange { .. } => true,
+            StatementHint::AtomicIncrement { .. } => true,
+            StatementHint::AtomicDecrement { .. } => true,
+            StatementHint::AsyncFunction { .. } => true,
+            StatementHint::AwaitExpression { .. } => true,
+            StatementHint::PromiseCreate { .. } => true,
+            StatementHint::PromiseThen { .. } => true,
+            StatementHint::PromiseCatch { .. } => true,
+            StatementHint::PromiseAll { .. } => true,
+            StatementHint::PromiseRace { .. } => true,
+            StatementHint::DocComment { .. } => true,
+            StatementHint::DocFunction { .. } => true,
+            StatementHint::DocClass { .. } => true,
             // Everything else goes to AI
             _ => false,
         }
@@ -619,6 +924,7 @@ impl StatementHint {
             StatementHint::Declaration {
                 names,
                 type_hint,
+                qualifiers,
                 initial_value,
                 is_array,
                 array_size,
@@ -627,6 +933,9 @@ impl StatementHint {
                 parts.push(format!("- Variables: {}", names.join(", ")));
                 if let Some(ty) = type_hint {
                     parts.push(format!("- Type: {}", ty));
+                }
+                if !qualifiers.is_empty() {
+                    parts.push(format!("- Qualifiers: {}", qualifiers.join(" ")));
                 }
                 if *is_array {
                     parts.push("- Is array: yes".to_string());
@@ -738,6 +1047,15 @@ impl StatementHint {
                 format!("- Intent: {}\n- Target: {}", action, target)
             }
 
+            StatementHint::PrePostModify { target, delta, position } => {
+                let action = if *delta > 0 { "Increment" } else { "Decrement" };
+                let pos = match position {
+                    IncDecPosition::Pre => "Pre",
+                    IncDecPosition::Post => "Post",
+                };
+                format!("- Intent: {} {}\n- Target: {}", pos, action, target)
+            }
+
             StatementHint::FunctionDef {
                 name,
                 parameters,
@@ -771,6 +1089,18 @@ impl StatementHint {
                         .map(|(ty, n)| format!("{} {}", ty, n))
                         .collect();
                     parts.push(format!("- Fields: {}", flds.join(", ")));
+                }
+                parts.join("\n")
+            }
+
+            StatementHint::BitfieldDecl { name, type_hint, width } => {
+                let mut parts = vec![
+                    "- Intent: Bitfield declaration".to_string(),
+                    format!("- Name: {}", name),
+                    format!("- Width: {}", width),
+                ];
+                if let Some(ty) = type_hint {
+                    parts.push(format!("- Type: {}", ty));
                 }
                 parts.join("\n")
             }
@@ -1015,6 +1345,41 @@ impl StatementHint {
                 }
                 s.join("\n")
             }
+            StatementHint::DesignatedInit { type_hint, name, designators } => {
+                let mut s = vec![
+                    "- Intent: Designated initializer".to_string(),
+                    format!("- Name: {}", name),
+                ];
+                if !designators.is_empty() {
+                    let items: Vec<String> = designators
+                        .iter()
+                        .map(|(d, v)| format!("{}={}", d, v))
+                        .collect();
+                    s.push(format!("- Designators: {}", items.join(", ")));
+                }
+                if let Some(ty) = type_hint {
+                    s.push(format!("- Type: {}", ty));
+                }
+                s.join("\n")
+            }
+            StatementHint::CompoundLiteral { type_hint, values, fields, is_array } => {
+                let mut s = vec![
+                    "- Intent: Compound literal".to_string(),
+                    format!("- Type: {}", type_hint),
+                    format!("- Is array: {}", if *is_array { "yes" } else { "no" }),
+                ];
+                if !values.is_empty() {
+                    s.push(format!("- Values: {}", values.join(", ")));
+                }
+                if !fields.is_empty() {
+                    let items: Vec<String> = fields
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect();
+                    s.push(format!("- Fields: {}", items.join(", ")));
+                }
+                s.join("\n")
+            }
             StatementHint::MultiDimAccess { array, indices, value } => {
                 let mut s = vec![
                     "- Intent: Multidimensional access".to_string(),
@@ -1045,11 +1410,33 @@ impl StatementHint {
                 }
                 s.join("\n")
             }
+            StatementHint::AnonymousStruct { parent, fields } => {
+                let mut s = vec!["- Intent: Anonymous struct".to_string()];
+                if let Some(p) = parent {
+                    s.push(format!("- Parent: {}", p));
+                }
+                if !fields.is_empty() {
+                    let f: Vec<String> = fields.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect();
+                    s.push(format!("- Fields: {}", f.join(", ")));
+                }
+                s.join("\n")
+            }
             StatementHint::UnionDef { name, fields } => {
                 let mut s = vec![
                     "- Intent: Union definition".to_string(),
                     format!("- Name: {}", name),
                 ];
+                if !fields.is_empty() {
+                    let f: Vec<String> = fields.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect();
+                    s.push(format!("- Fields: {}", f.join(", ")));
+                }
+                s.join("\n")
+            }
+            StatementHint::AnonymousUnion { parent, fields } => {
+                let mut s = vec!["- Intent: Anonymous union".to_string()];
+                if let Some(p) = parent {
+                    s.push(format!("- Parent: {}", p));
+                }
                 if !fields.is_empty() {
                     let f: Vec<String> = fields.iter().map(|(ty, n)| format!("{} {}", ty, n)).collect();
                     s.push(format!("- Fields: {}", f.join(", ")));
@@ -1238,9 +1625,28 @@ impl StatementHint {
                 s.join("\n")
             }
 
+            StatementHint::StaticAssert { condition, message } => {
+                let mut s = vec![
+                    "- Intent: Static assert".to_string(),
+                    format!("- Condition: {}", condition),
+                ];
+                if let Some(msg) = message {
+                    s.push(format!("- Message: {}", msg));
+                }
+                s.join("\n")
+            }
+            StatementHint::CommaExpression { expressions } => {
+                if expressions.is_empty() {
+                    "- Intent: Comma expression".to_string()
+                } else {
+                    format!("- Intent: Comma expression\n- Expressions: {}", expressions.join(", "))
+                }
+            }
+
             StatementHint::Unknown { original } => {
                 format!("- Intent: Unknown (AI should interpret)\n- Original: \"{}\"", original)
             }
+            _ => format!("- Intent: {:?}", self),
         }
     }
 }
@@ -1269,6 +1675,16 @@ const IF_KEYWORDS: &[&str] = &[
 const ELSE_IF_KEYWORDS: &[&str] = &["else if", "otherwise if", "elsewhen", "else when"];
 
 const LIST_KEYWORDS: &[&str] = &["list", "array", "vector", "arr", "collection"];
+const QUALIFIER_WORDS: &[&str] = &["const", "volatile", "register", "static", "extern"];
+const DECL_TYPE_WORDS: &[&str] = &[
+    "int", "integer", "integers",
+    "float", "floats",
+    "double", "doubles",
+    "char", "chars",
+    "string", "strings",
+    "bool", "boolean", "bools", "booleans",
+    "long", "short", "unsigned", "signed", "size_t", "long long", "unsigned long", "unsigned int",
+];
 
 const ADD_KEYWORDS: &[&str] = &["add", "sum", "total", "combine", "plus", "tally", "sum up"];
 const SUBTRACT_KEYWORDS: &[&str] = &[
@@ -1339,6 +1755,10 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
         return hint;
     }
 
+    if let Some(hint) = try_extract_qualified_declaration(line) {
+        return hint;
+    }
+
     if let Some(hint) = try_extract_flexible_assignment(line) {
         return hint;
     }
@@ -1348,6 +1768,14 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_assignment(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_bitfield(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_vla_declaration(line) {
         return hint;
     }
 
@@ -1372,6 +1800,10 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_function(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_anonymous_struct_union(line) {
         return hint;
     }
 
@@ -1472,11 +1904,27 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
         return hint;
     }
 
+    if let Some(hint) = try_extract_static_assert(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_comma_expression(line) {
+        return hint;
+    }
+
     if let Some(hint) = try_extract_preprocessor(line) {
         return hint;
     }
 
     if let Some(hint) = try_extract_advanced_memory(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_compound_literal(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_designated_init(line) {
         return hint;
     }
 
@@ -1509,6 +1957,134 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
     }
 
     if let Some(hint) = try_extract_error_handling(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_try_block(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_except_block(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_finally_block(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_raise(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_error_check(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_setjmp(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_longjmp(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_test_function(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_test_assert(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_test_equal(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_labeled_control(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_match(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_guard(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_list_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_stack_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_queue_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_map_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_set_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_class_def(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_class_field(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_class_method(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_constructor(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_object_create(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_method_call(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_lambda(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_map_filter_reduce(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_thread_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_sync_ops(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_async(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_doc_comment(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_doc_function(line) {
+        return hint;
+    }
+
+    if let Some(hint) = try_extract_doc_class(line) {
         return hint;
     }
 
@@ -1628,6 +2204,27 @@ fn try_extract_print(line: &str) -> Option<StatementHint> {
 }
 
 fn try_extract_increment_decrement(line: &str) -> Option<StatementHint> {
+    for (kw, delta, position) in [
+        ("pre increment", 1, IncDecPosition::Pre),
+        ("prefix increment", 1, IncDecPosition::Pre),
+        ("post increment", 1, IncDecPosition::Post),
+        ("postfix increment", 1, IncDecPosition::Post),
+        ("pre decrement", -1, IncDecPosition::Pre),
+        ("prefix decrement", -1, IncDecPosition::Pre),
+        ("post decrement", -1, IncDecPosition::Post),
+        ("postfix decrement", -1, IncDecPosition::Post),
+    ] {
+        if let Some(rest) = strip_keyword(line, kw) {
+            let target = sanitize_identifier(rest);
+            if !target.is_empty() {
+                return Some(StatementHint::PrePostModify {
+                    target,
+                    delta,
+                    position,
+                });
+            }
+        }
+    }
     if let Some(rest) = strip_keyword(line, "increment") {
         let target = sanitize_identifier(rest);
         if !target.is_empty() {
@@ -1850,6 +2447,8 @@ static EXPR_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||[()+\-*/%<>]")
         .expect("valid expression token regex")
 });
+static BITFIELD_WIDTH_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(\d+)\s*bits?\b").expect("valid bitfield regex"));
 
 fn normalize_expression_phrases(input: &str) -> String {
     let mut out = input.to_string();
@@ -1888,7 +2487,8 @@ fn looks_like_expression(input: &str) -> bool {
             lower.as_str(),
             "add" | "subtract" | "multiply" | "divide" | "modulo" | "mod" | "remainder"
                 | "plus" | "minus" | "times" | "over" | "and" | "or" | "not"
-                | "squared" | "cubed"
+                | "squared" | "cubed" | "doubled" | "halved" | "negated"
+                | "absolute" | "rounded" | "floor" | "ceiling"
         ) || matches!(
             token.as_str(),
             "+" | "-" | "*" | "/" | "%" | "&&" | "||" | "==" | "!=" | "<" | ">" | "<=" | ">="
@@ -1933,6 +2533,75 @@ fn parse_expression(input: &str) -> Option<String> {
             "and" => output.push("&&".to_string()),
             "or" => output.push("||".to_string()),
             "not" => output.push("!".to_string()),
+            "doubled" => {
+                if let Some(prev) = output.pop() {
+                    output.push(format!("({} * 2)", prev));
+                } else if let Some(next) = iter.next() {
+                    output.push(format!("(2 * {})", next));
+                }
+            }
+            "halved" => {
+                if let Some(prev) = output.pop() {
+                    output.push(format!("({} / 2)", prev));
+                } else if let Some(next) = iter.next() {
+                    output.push(format!("({} / 2)", next));
+                }
+            }
+            "negated" => {
+                if let Some(prev) = output.pop() {
+                    output.push(format!("(-{})", prev));
+                } else if let Some(next) = iter.next() {
+                    output.push(format!("(-{})", next));
+                }
+            }
+            "absolute" => {
+                if let Some(next) = iter.peek() {
+                    if next != "of" {
+                        let arg = iter.next().unwrap();
+                        output.push(format!("abs({})", arg));
+                    } else {
+                        output.push("abs".to_string());
+                    }
+                } else {
+                    output.push("abs".to_string());
+                }
+            }
+            "rounded" => {
+                if let Some(next) = iter.peek() {
+                    if next != "of" {
+                        let arg = iter.next().unwrap();
+                        output.push(format!("round({})", arg));
+                    } else {
+                        output.push("round".to_string());
+                    }
+                } else {
+                    output.push("round".to_string());
+                }
+            }
+            "floor" => {
+                if let Some(next) = iter.peek() {
+                    if next != "of" {
+                        let arg = iter.next().unwrap();
+                        output.push(format!("floor({})", arg));
+                    } else {
+                        output.push("floor".to_string());
+                    }
+                } else {
+                    output.push("floor".to_string());
+                }
+            }
+            "ceiling" => {
+                if let Some(next) = iter.peek() {
+                    if next != "of" {
+                        let arg = iter.next().unwrap();
+                        output.push(format!("ceil({})", arg));
+                    } else {
+                        output.push("ceil".to_string());
+                    }
+                } else {
+                    output.push("ceil".to_string());
+                }
+            }
             "squared" => {
                 let prev = output.pop()?;
                 output.push(format!("({} * {})", prev, prev));
@@ -2010,9 +2679,66 @@ fn build_declaration_hint(target_part: &str, value_part: &str) -> Option<Stateme
     Some(StatementHint::Declaration {
         names: vec![target],
         type_hint: None,
+        qualifiers: Vec::new(),
         initial_value: Some(value),
         is_array: false,
         array_size: None,
+    })
+}
+
+fn try_extract_bitfield(line: &str) -> Option<StatementHint> {
+    let width = BITFIELD_WIDTH_RE
+        .captures(line)
+        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))?;
+
+    let rest = strip_any_keyword(line, DECLARE_KEYWORDS).unwrap_or(line);
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let mut type_hint: Option<String> = None;
+    let mut name = "";
+
+    for token in tokens {
+        let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        let lower = clean.to_lowercase();
+        if clean.is_empty() {
+            continue;
+        }
+        if lower == "bit" || lower == "bits" || lower == "bitfield" || lower == "field" || lower == "fields" {
+            continue;
+        }
+        if clean == width {
+            continue;
+        }
+        if QUALIFIER_WORDS.contains(&lower.as_str()) {
+            continue;
+        }
+        if DECL_TYPE_WORDS.contains(&lower.as_str()) {
+            let mapped = match lower.as_str() {
+                "integers" => "int",
+                "floats" => "float",
+                "doubles" => "double",
+                "chars" => "char",
+                "strings" => "string",
+                "bools" | "booleans" => "bool",
+                other => other,
+            };
+            type_hint = Some(mapped.to_string());
+            continue;
+        }
+        if clean.parse::<i32>().is_ok() {
+            continue;
+        }
+        name = clean;
+    }
+
+    let name = sanitize_identifier(name);
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(StatementHint::BitfieldDecl {
+        name,
+        type_hint,
+        width,
     })
 }
 
@@ -2174,6 +2900,116 @@ fn try_extract_read(line: &str) -> Option<StatementHint> {
     Some(StatementHint::Read { variables })
 }
 
+fn try_extract_vla_declaration(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    let rest = if lower.starts_with("variable length array") {
+        strip_any_keyword(line, &["variable length array", "variable-length array"])?
+    } else if lower.starts_with("vla ") {
+        strip_keyword(line, "vla")?
+    } else if lower.starts_with("array of ") {
+        strip_keyword(line, "array of")?
+    } else {
+        return None;
+    };
+
+    let mut rest = rest.trim();
+    if rest.starts_with("of ") {
+        rest = rest[3..].trim();
+    }
+
+    let mut tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut size_token = tokens.remove(0);
+    if size_token.eq_ignore_ascii_case("size") || size_token.eq_ignore_ascii_case("length") {
+        size_token = tokens.get(0)?.to_owned();
+        tokens.remove(0);
+    }
+
+    let size = sanitize_identifier(size_token);
+    if size.is_empty() {
+        return None;
+    }
+
+    let mut qualifiers: Vec<String> = Vec::new();
+    let mut type_hint: Option<String> = None;
+    let mut name: Option<String> = None;
+
+    for token in tokens {
+        let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        let lower = clean.to_lowercase();
+        if clean.is_empty() {
+            continue;
+        }
+        if lower == "of" || lower == "array" || lower == "values" || lower == "elements" {
+            continue;
+        }
+        if QUALIFIER_WORDS.contains(&lower.as_str()) {
+            if !qualifiers.iter().any(|q| q == &lower) {
+                qualifiers.push(lower);
+            }
+            continue;
+        }
+        if DECL_TYPE_WORDS.contains(&lower.as_str()) {
+            let mapped = match lower.as_str() {
+                "integers" => "int",
+                "floats" => "float",
+                "doubles" => "double",
+                "chars" => "char",
+                "strings" => "string",
+                "bools" | "booleans" => "bool",
+                other => other,
+            };
+            type_hint = Some(mapped.to_string());
+            continue;
+        }
+        if name.is_none() {
+            let ident = sanitize_identifier(clean);
+            if !ident.is_empty() {
+                name = Some(ident);
+            }
+        }
+    }
+
+    let name = name.unwrap_or_else(|| "arr".to_string());
+
+    Some(StatementHint::Declaration {
+        names: vec![name],
+        type_hint,
+        qualifiers,
+        initial_value: None,
+        is_array: true,
+        array_size: Some(size),
+    })
+}
+
+fn try_extract_qualified_declaration(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    let first = lower.split_whitespace().next()?;
+    if !QUALIFIER_WORDS.contains(&first) && !DECL_TYPE_WORDS.contains(&first) {
+        return None;
+    }
+    if lower.starts_with("struct ") || lower.starts_with("union ") || lower.contains(" function") {
+        return None;
+    }
+    let is_array = LIST_KEYWORDS.iter().any(|kw| lower.contains(kw));
+    let (names, type_hint, qualifiers, initial_value, array_size) =
+        parse_declaration_parts(line, is_array);
+    if names.is_empty() {
+        return None;
+    }
+    Some(StatementHint::Declaration {
+        names,
+        type_hint,
+        qualifiers,
+        initial_value,
+        is_array,
+        array_size,
+    })
+}
+
 fn try_extract_declaration(line: &str) -> Option<StatementHint> {
     // Check for list/array keywords first
     let is_array = LIST_KEYWORDS.iter().any(|kw| {
@@ -2194,7 +3030,7 @@ fn try_extract_declaration(line: &str) -> Option<StatementHint> {
         })?;
 
     // Parse the declaration
-    let (names, type_hint, initial_value, array_size) = parse_declaration_parts(rest, is_array);
+    let (names, type_hint, qualifiers, initial_value, array_size) = parse_declaration_parts(rest, is_array);
     
     if names.is_empty() {
         return None;
@@ -2203,15 +3039,20 @@ fn try_extract_declaration(line: &str) -> Option<StatementHint> {
     Some(StatementHint::Declaration {
         names,
         type_hint,
+        qualifiers,
         initial_value,
         is_array,
         array_size,
     })
 }
 
-fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<String>, Option<String>, Option<String>) {
+fn parse_declaration_parts(
+    text: &str,
+    is_array: bool,
+) -> (Vec<String>, Option<String>, Vec<String>, Option<String>, Option<String>) {
     let mut names = Vec::new();
     let mut type_hint = None;
+    let mut qualifiers: Vec<String> = Vec::new();
     let mut initial_value = None;
     let mut array_size = None;
     let mut decl_text = text;
@@ -2234,11 +3075,6 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
     let article_noise = ["a", "an", "the"];
     // These are always filtered as they are connecting words
     let connecting_noise = ["of", "with", "named", "called", "as", "that", "is", "be", "to"];
-    let type_words = [
-        "int", "integer", "float", "double", "char", "string", "bool", "boolean",
-        "long", "short", "unsigned", "signed", "size_t", "long long", "unsigned long", "unsigned int",
-    ];
-    
     let tokens: Vec<&str> = decl_text.split_whitespace().collect();
     
     for (i, token) in tokens.iter().enumerate() {
@@ -2265,9 +3101,26 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
             continue;
         }
         
+        // Detect qualifiers
+        if QUALIFIER_WORDS.contains(&lower.as_str()) {
+            if !qualifiers.iter().any(|q| q == &lower) {
+                qualifiers.push(lower.clone());
+            }
+            continue;
+        }
+
         // Detect type
-        if type_words.contains(&lower.as_str()) {
-            type_hint = Some(lower.clone());
+        if DECL_TYPE_WORDS.contains(&lower.as_str()) {
+            let mapped = match lower.as_str() {
+                "integers" => "int",
+                "floats" => "float",
+                "doubles" => "double",
+                "chars" => "char",
+                "strings" => "string",
+                "bools" | "booleans" => "bool",
+                other => other,
+            };
+            type_hint = Some(mapped.to_string());
             continue;
         }
         
@@ -2295,7 +3148,7 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
         }
     }
 
-    (names, type_hint, initial_value, array_size)
+    (names, type_hint, qualifiers, initial_value, array_size)
 }
 
 fn try_extract_loop(line: &str) -> Option<StatementHint> {
@@ -2490,7 +3343,29 @@ fn try_extract_conditional(line: &str) -> Option<StatementHint> {
     }
 
     let rest = strip_any_keyword(line, IF_KEYWORDS)?;
-    
+    let lower_rest = rest.to_lowercase();
+    if lower_rest.contains(" else if ") {
+        let mut else_action = None;
+        let mut main = rest.to_string();
+        if let Some(idx) = lower_rest.find(" else ") {
+            else_action = Some(rest[idx + 6..].trim().to_string());
+            main = rest[..idx].to_string();
+        }
+        let parts: Vec<&str> = main.split(" else if ").collect();
+        let mut conditions = Vec::new();
+        for part in parts {
+            let mut seg = part.trim();
+            let seg_lower = seg.to_lowercase();
+            if seg_lower.starts_with("if ") {
+                seg = seg.get(3..).unwrap_or(seg);
+            }
+            let (cond, then_action, _) = parse_conditional_parts(seg);
+            let action = then_action.unwrap_or_else(|| "pass".to_string());
+            conditions.push((cond, action));
+        }
+        return Some(StatementHint::ConditionalChain { conditions, else_action });
+    }
+
     let (condition, then_action, else_action) = parse_conditional_parts(rest);
     
     Some(StatementHint::Conditional {
@@ -2665,6 +3540,52 @@ fn parse_function_signature(tokens: &[&str]) -> (Vec<(String, String)>, Option<S
     (parameters, return_type)
 }
 
+fn try_extract_anonymous_struct_union(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    for (kw, is_union) in [
+        ("anonymous struct", false),
+        ("unnamed struct", false),
+        ("anonymous union", true),
+        ("unnamed union", true),
+    ] {
+        if lower.starts_with(kw) {
+            let rest = strip_keyword(line, kw)?;
+            let lower_rest = rest.to_lowercase();
+            let mut parent: Option<String> = None;
+            let mut fields_part = rest;
+
+            if lower_rest.starts_with("inside ") {
+                let after = rest[7..].trim();
+                let lower_after = after.to_lowercase();
+                if let Some(idx) = lower_after.find(" with ") {
+                    let parent_name = sanitize_identifier(after[..idx].trim());
+                    if !parent_name.is_empty() {
+                        parent = Some(parent_name);
+                    }
+                    fields_part = &after[idx + 6..];
+                } else {
+                    let parent_name = sanitize_identifier(after);
+                    if !parent_name.is_empty() {
+                        parent = Some(parent_name);
+                    }
+                    fields_part = "";
+                }
+            } else if let Some(idx) = lower_rest.find(" with ") {
+                fields_part = &rest[idx + 6..];
+            }
+
+            let fields = parse_struct_fields(fields_part);
+            return Some(if is_union {
+                StatementHint::AnonymousUnion { parent, fields }
+            } else {
+                StatementHint::AnonymousStruct { parent, fields }
+            });
+        }
+    }
+
+    None
+}
+
 fn try_extract_struct(line: &str) -> Option<StatementHint> {
     let rest = strip_keyword(line, "struct")?;
     
@@ -2704,6 +3625,9 @@ fn parse_struct_fields(text: &str) -> Vec<(String, String)> {
     
     for chunk in text.split(|c| c == ',' || c == ';').flat_map(|s| s.split(" and ")) {
         let tokens: Vec<&str> = chunk.split_whitespace().collect();
+        let bit_width = BITFIELD_WIDTH_RE
+            .captures(chunk)
+            .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()));
         
         let mut field_type = "int";
         let mut field_name = "";
@@ -2711,6 +3635,15 @@ fn parse_struct_fields(text: &str) -> Vec<(String, String)> {
         for token in tokens.iter().rev() {
             let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let lower = clean.to_lowercase();
+
+            if lower == "bit" || lower == "bits" || lower == "bitfield" || lower == "field" || lower == "fields" {
+                continue;
+            }
+            if let Some(width) = &bit_width {
+                if clean == width {
+                    continue;
+                }
+            }
             
             if let Some((_, mapped)) = type_map.iter().find(|(k, _)| *k == lower.as_str()) {
                 field_type = mapped;
@@ -2722,7 +3655,12 @@ fn parse_struct_fields(text: &str) -> Vec<(String, String)> {
         
         let name = sanitize_identifier(field_name);
         if !name.is_empty() {
-            fields.push((field_type.to_string(), name));
+            let final_name = if let Some(width) = bit_width {
+                format!("{} : {}", name, width)
+            } else {
+                name
+            };
+            fields.push((field_type.to_string(), final_name));
         }
     }
     
@@ -2856,6 +3794,10 @@ const EQ_PATTERNS: &[&str] = &[
     "matches",
     "has the same value as",
     "is the same as",
+    "approximately",
+    "approximately equal to",
+    "approx equal to",
+    "about equal to",
     "==",
 ];
 
@@ -2920,6 +3862,12 @@ fn normalize_condition(condition: &str) -> String {
     });
 
     let mut out = condition.to_string();
+    // Handle "x between a and b" before generic replacements
+    let between_re = Regex::new(r"(?i)\b([A-Za-z_][A-Za-z0-9_]*)\s+between\s+([^\s]+)\s+and\s+([^\s]+)\b")
+        .expect("valid between regex");
+    out = between_re
+        .replace_all(&out, "$1 >= $2 && $1 <= $3")
+        .into_owned();
     for (re, replacement) in REPLACERS.iter() {
         out = re.replace_all(&out, *replacement).into_owned();
     }
@@ -3614,6 +4562,7 @@ fn try_extract_bare_declaration(line: &str) -> Option<StatementHint> {
     Some(StatementHint::Declaration {
         names: vec![name],
         type_hint: Some("int".to_string()),
+        qualifiers: Vec::new(),
         initial_value: Some(tokens[1].to_string()),
         is_array: false,
         array_size: None,
@@ -3824,6 +4773,84 @@ fn try_extract_logical(line: &str) -> Option<StatementHint> {
     None
 }
 
+fn try_extract_static_assert(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    let rest = if lower.starts_with("static assert") {
+        strip_keyword(line, "static assert")?
+    } else if lower.starts_with("compile time assert") {
+        strip_keyword(line, "compile time assert")?
+    } else if lower.starts_with("compile-time assert") {
+        strip_keyword(line, "compile-time assert")?
+    } else {
+        return None;
+    };
+
+    let mut condition = rest.trim().to_string();
+    let mut message = None;
+    if let Some((left, right)) = split_on_marker(&condition, &[" message ", " with message ", " saying "]) {
+        condition = left;
+        let msg = right.trim().trim_matches('"').to_string();
+        if !msg.is_empty() {
+            message = Some(msg);
+        }
+    }
+
+    let normalized = normalize_condition(&condition);
+    if normalized.trim().is_empty() {
+        return None;
+    }
+
+    Some(StatementHint::StaticAssert {
+        condition: normalized.trim().to_string(),
+        message,
+    })
+}
+
+fn try_extract_comma_expression(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    let rest = if lower.starts_with("sequence ") {
+        strip_keyword(line, "sequence")?
+    } else if lower.starts_with("comma operator") {
+        strip_keyword(line, "comma operator")?
+    } else if lower.starts_with("comma expression") {
+        strip_keyword(line, "comma expression")?
+    } else {
+        return None;
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    for chunk in rest
+        .split(|c| c == ',' || c == ';')
+        .flat_map(|s| s.split(" and then "))
+        .flat_map(|s| s.split(" then "))
+    {
+        let piece = chunk.trim();
+        if piece.is_empty() {
+            continue;
+        }
+        if let Some((left, right)) = split_on_marker(piece, &[" equals ", " = ", " is "]) {
+            let target = sanitize_identifier(&left);
+            let value = normalize_assignment_value(&right);
+            if !target.is_empty() && !value.is_empty() {
+                parts.push(format!("{} = {}", target, value));
+                continue;
+            }
+        }
+        let normalized = normalize_assignment_value(piece);
+        if normalized.is_empty() {
+            parts.push(piece.to_string());
+        } else {
+            parts.push(normalized);
+        }
+    }
+
+    if parts.len() < 2 {
+        return None;
+    }
+
+    Some(StatementHint::CommaExpression { expressions: parts })
+}
+
 fn try_extract_preprocessor(line: &str) -> Option<StatementHint> {
     let lower = line.trim().to_lowercase();
 
@@ -3968,6 +4995,190 @@ fn try_extract_advanced_memory(line: &str) -> Option<StatementHint> {
     }
 
     None
+}
+
+fn try_extract_compound_literal(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+
+    let (is_array, rest) = if lower.starts_with("anonymous array") {
+        (true, strip_keyword(line, "anonymous array")?)
+    } else if lower.starts_with("inline array") {
+        (true, strip_keyword(line, "inline array")?)
+    } else if lower.starts_with("compound array") {
+        (true, strip_keyword(line, "compound array")?)
+    } else if lower.starts_with("array literal") {
+        (true, strip_keyword(line, "array literal")?)
+    } else if lower.starts_with("anonymous ") || lower.starts_with("inline ") || lower.starts_with("compound literal ") {
+        (false, strip_any_keyword(line, &["anonymous", "inline", "compound literal"])?)
+    } else {
+        return None;
+    };
+
+    if is_array {
+        let lower_rest = rest.to_lowercase();
+        let mut type_hint: Option<String> = None;
+        let mut values_part = rest.trim();
+        if let Some(idx) = lower_rest.find(" of ") {
+            let prefix = rest[..idx].trim();
+            values_part = rest[idx + 4..].trim();
+            for token in prefix.split_whitespace() {
+                let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                let lower_tok = clean.to_lowercase();
+                if DECL_TYPE_WORDS.contains(&lower_tok.as_str()) {
+                    type_hint = Some(lower_tok);
+                    break;
+                }
+            }
+        }
+
+        let values: Vec<String> = values_part
+            .split(|c| c == ',' || c == ';')
+            .flat_map(|s| s.split_whitespace())
+            .filter(|v| !v.is_empty() && *v != "values")
+            .map(|v| v.to_string())
+            .collect();
+
+        if values.is_empty() {
+            return None;
+        }
+
+        let ty = type_hint.unwrap_or_else(|| "int".to_string());
+        return Some(StatementHint::CompoundLiteral {
+            type_hint: ty,
+            values,
+            fields: Vec::new(),
+            is_array: true,
+        });
+    }
+
+    if lower.starts_with("inline function") {
+        return None;
+    }
+
+    let rest = rest.trim();
+    let lower_rest = rest.to_lowercase();
+    let mut type_hint = "";
+    let mut fields_part = "";
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    type_hint = tokens[0];
+    fields_part = rest[type_hint.len()..].trim();
+    if lower_rest.starts_with("struct ") {
+        let inner = strip_keyword(rest, "struct")?;
+        let inner_tokens: Vec<&str> = inner.split_whitespace().collect();
+        if inner_tokens.is_empty() {
+            return None;
+        }
+        type_hint = inner_tokens[0];
+        fields_part = inner[type_hint.len()..].trim();
+    }
+
+    if fields_part.starts_with("with ") {
+        fields_part = fields_part[5..].trim();
+    } else if fields_part.starts_with("fields ") {
+        fields_part = fields_part[7..].trim();
+    }
+
+    let mut fields = parse_struct_init_fields(fields_part);
+    if fields.is_empty() {
+        let remainder_tokens: Vec<&str> = fields_part.split_whitespace().collect();
+        if remainder_tokens.len() >= 2 && remainder_tokens.len() % 2 == 0 {
+            let mut i = 0;
+            while i + 1 < remainder_tokens.len() {
+                let name = sanitize_identifier(remainder_tokens[i]);
+                let value = remainder_tokens[i + 1].to_string();
+                if !name.is_empty() && !value.is_empty() {
+                    fields.push((name, value));
+                }
+                i += 2;
+            }
+        }
+    }
+
+    if fields.is_empty() {
+        return None;
+    }
+
+    Some(StatementHint::CompoundLiteral {
+        type_hint: sanitize_identifier(type_hint),
+        values: Vec::new(),
+        fields,
+        is_array: false,
+    })
+}
+
+fn try_extract_designated_init(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if !lower.contains("index") || !lower.contains("array") {
+        return None;
+    }
+
+    let rest = if lower.starts_with("initialize array") {
+        strip_keyword(line, "initialize array")?
+    } else if lower.starts_with("init array") {
+        strip_keyword(line, "init array")?
+    } else if lower.starts_with("array ") {
+        strip_keyword(line, "array")?
+    } else {
+        line
+    };
+
+    let lower_rest = rest.to_lowercase();
+    let mut type_hint: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut fields_part = rest;
+    if let Some(idx) = lower_rest.find(" with ") {
+        let prefix = rest[..idx].trim();
+        fields_part = rest[idx + 6..].trim();
+        for token in prefix.split_whitespace() {
+            let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+            let lower_tok = clean.to_lowercase();
+            if clean.is_empty() || lower_tok == "array" || lower_tok == "of" {
+                continue;
+            }
+            if DECL_TYPE_WORDS.contains(&lower_tok.as_str()) {
+                type_hint = Some(lower_tok);
+                continue;
+            }
+            let ident = sanitize_identifier(clean);
+            if !ident.is_empty() {
+                name = Some(ident);
+            }
+        }
+    }
+
+    let name = name.unwrap_or_else(|| "arr".to_string());
+    let mut designators = Vec::new();
+    let source = fields_part;
+    for segment in source.split("index").skip(1) {
+        let seg = segment.trim();
+        if let Some((idx_part, value_part)) = split_on_marker(seg, &[" equals ", " = ", " is "]) {
+            let idx = sanitize_identifier(&idx_part);
+            let mut value = value_part.trim();
+            if let Some((first, _)) = value.split_once(" and ") {
+                value = first.trim();
+            }
+            if let Some((first, _)) = value.split_once(',') {
+                value = first.trim();
+            }
+            let normalized = normalize_assignment_value(value);
+            if !idx.is_empty() && !normalized.is_empty() {
+                designators.push((format!("[{}]", idx), normalized));
+            }
+        }
+    }
+
+    if designators.is_empty() {
+        return None;
+    }
+
+    Some(StatementHint::DesignatedInit {
+        type_hint,
+        name,
+        designators,
+    })
 }
 
 fn try_extract_multi_array(line: &str) -> Option<StatementHint> {
@@ -4450,6 +5661,996 @@ fn try_extract_error_handling(line: &str) -> Option<StatementHint> {
     None
 }
 
+fn try_extract_try_block(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    if lower == "try" || lower.starts_with("try ") || lower.starts_with("attempt") {
+        return Some(StatementHint::TryBlock);
+    }
+    None
+}
+
+fn try_extract_except_block(line: &str) -> Option<StatementHint> {
+    let rest = strip_any_keyword(line, &["except", "catch"])?;
+    let lower_rest = rest.to_lowercase();
+    let mut exception_type = None;
+    let mut variable = None;
+
+    if let Some(idx) = lower_rest.find(" as ") {
+        exception_type = Some(rest[..idx].trim().to_string());
+        variable = Some(sanitize_identifier(&rest[idx + 4..]));
+    } else if let Some(idx) = lower_rest.find(" into ") {
+        exception_type = Some(rest[..idx].trim().to_string());
+        variable = Some(sanitize_identifier(&rest[idx + 6..]));
+    } else {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            exception_type = Some(tokens[0].to_string());
+            if tokens.len() > 1 {
+                let var = sanitize_identifier(tokens[1]);
+                if !var.is_empty() {
+                    variable = Some(var);
+                }
+            }
+        }
+    }
+
+    Some(StatementHint::ExceptBlock { exception_type, variable })
+}
+
+fn try_extract_finally_block(line: &str) -> Option<StatementHint> {
+    let lower = line.trim().to_lowercase();
+    if lower == "finally" || lower.starts_with("finally ") || lower.starts_with("cleanup") {
+        return Some(StatementHint::FinallyBlock);
+    }
+    None
+}
+
+fn try_extract_raise(line: &str) -> Option<StatementHint> {
+    let rest = strip_any_keyword(line, &["raise", "throw"])?;
+    let rest_trimmed = rest.trim();
+    if rest_trimmed.is_empty() {
+        return Some(StatementHint::RaiseException { exception_type: "Exception".to_string(), message: None });
+    }
+    let lower_rest = rest_trimmed.to_lowercase();
+    if let Some(idx) = lower_rest.find(" with ") {
+        let ex = rest_trimmed[..idx].trim();
+        let msg = rest_trimmed[idx + 6..].trim();
+        let exception_type = if ex.is_empty() { "Exception".to_string() } else { ex.to_string() };
+        let message = if msg.is_empty() { None } else { Some(msg.to_string()) };
+        return Some(StatementHint::RaiseException { exception_type, message });
+    }
+    let tokens: Vec<&str> = rest_trimmed.split_whitespace().collect();
+    let exception_type = tokens[0].to_string();
+    let message = if tokens.len() > 1 {
+        Some(tokens[1..].join(" "))
+    } else {
+        None
+    };
+    Some(StatementHint::RaiseException { exception_type, message })
+}
+
+fn try_extract_error_check(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("check error") || lower.starts_with("error check") || lower.starts_with("handle error") {
+        let rest = line.split_whitespace().skip(2).collect::<Vec<&str>>().join(" ");
+        if !rest.trim().is_empty() {
+            return Some(StatementHint::ErrorCheck { function_call: rest.trim().to_string(), error_variable: None });
+        }
+    }
+    if lower.starts_with("if error in ") || lower.starts_with("if error for ") {
+        let rest = line.split_whitespace().skip(3).collect::<Vec<&str>>().join(" ");
+        if !rest.trim().is_empty() {
+            return Some(StatementHint::ErrorCheck { function_call: rest.trim().to_string(), error_variable: None });
+        }
+    }
+    None
+}
+
+fn try_extract_setjmp(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "setjmp")?;
+    let buffer = sanitize_identifier(rest.trim());
+    if !buffer.is_empty() {
+        return Some(StatementHint::SetJmp { buffer });
+    }
+    None
+}
+
+fn try_extract_longjmp(line: &str) -> Option<StatementHint> {
+    let rest = strip_keyword(line, "longjmp")?;
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    if tokens.len() >= 2 {
+        let buffer = sanitize_identifier(tokens[0]);
+        let value = tokens[1..].join(" ");
+        if !buffer.is_empty() && !value.is_empty() {
+            return Some(StatementHint::LongJmp { buffer, value });
+        }
+    }
+    None
+}
+
+fn try_extract_test_function(line: &str) -> Option<StatementHint> {
+    if let Some(rest) = strip_any_keyword(line, &["test function", "unit test", "test case"]) {
+        let name = sanitize_identifier(rest.split_whitespace().next().unwrap_or("test"));
+        if !name.is_empty() {
+            return Some(StatementHint::TestFunction { name, description: None });
+        }
+    }
+    if let Some(rest) = strip_any_keyword(line, &["test setup", "setup"]) {
+        let name = sanitize_identifier(rest.split_whitespace().next().unwrap_or("setup"));
+        if !name.is_empty() {
+            return Some(StatementHint::TestSetup { name });
+        }
+    }
+    if let Some(rest) = strip_any_keyword(line, &["test teardown", "teardown"]) {
+        let name = sanitize_identifier(rest.split_whitespace().next().unwrap_or("teardown"));
+        if !name.is_empty() {
+            return Some(StatementHint::TestTeardown { name });
+        }
+    }
+    if let Some(rest) = strip_any_keyword(line, &["mock", "stub"]) {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let name = sanitize_identifier(tokens[0]);
+            let mut return_value = "0".to_string();
+            if let Some(idx) = rest.to_lowercase().find(" return ") {
+                return_value = rest[idx + 8..].trim().to_string();
+            }
+            if !name.is_empty() {
+                return Some(StatementHint::MockFunction { name, return_value });
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_test_assert(line: &str) -> Option<StatementHint> {
+    let rest = strip_any_keyword(line, &["assert that", "verify that", "check that", "expect"])?;
+    let expr = rest.trim();
+    if !expr.is_empty() {
+        return Some(StatementHint::TestAssert { expression: expr.to_string(), message: None });
+    }
+    None
+}
+
+fn try_extract_test_equal(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("assert ") || lower.starts_with("expect ") || lower.contains(" should ") {
+        if let Some((left, right)) = split_on_marker(line, &[" equals ", " equal to ", " to equal "]) {
+            if !left.is_empty() && !right.is_empty() {
+                return Some(StatementHint::TestAssertEqual { left, right, message: None });
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_labeled_control(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("break ") {
+        let label = sanitize_identifier(&line[6..]);
+        if !label.is_empty() && label != "out" {
+            return Some(StatementHint::LabeledBreak { label });
+        }
+    }
+    if lower.starts_with("continue ") {
+        let label = sanitize_identifier(&line[9..]);
+        if !label.is_empty() {
+            return Some(StatementHint::LabeledContinue { label });
+        }
+    }
+    if lower.starts_with("labeled loop") || lower.starts_with("label loop") || lower.starts_with("loop label") {
+        let name = sanitize_identifier(line.split_whitespace().last().unwrap_or("loop"));
+        if !name.is_empty() {
+            let loop_hint = StatementHint::Loop { iterator: Some("i".to_string()), start: None, end: None, collection: None, body_action: None };
+            return Some(StatementHint::LabeledLoop { label: name, loop_hint: Box::new(loop_hint) });
+        }
+    }
+    None
+}
+
+fn try_extract_match(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("match ") || lower.starts_with("pattern match ") {
+        let rest = strip_any_keyword(line, &["match", "pattern match"])?;
+        if !rest.trim().is_empty() {
+            return Some(StatementHint::MatchBlock { expression: rest.trim().to_string() });
+        }
+    }
+    if lower.starts_with("match case ") || lower.starts_with("pattern case ") {
+        let rest = strip_any_keyword(line, &["match case", "pattern case"])?;
+        let lower_rest = rest.to_lowercase();
+        let (pattern_part, action_part) = if let Some(idx) = lower_rest.find(" do ") {
+            (&rest[..idx], Some(rest[idx + 4..].trim().to_string()))
+        } else {
+            (rest, None)
+        };
+        let (pattern, guard) = if let Some(idx) = pattern_part.to_lowercase().find(" when ") {
+            (pattern_part[..idx].trim().to_string(), Some(pattern_part[idx + 6..].trim().to_string()))
+        } else {
+            (pattern_part.trim().to_string(), None)
+        };
+        if !pattern.is_empty() {
+            return Some(StatementHint::MatchCase { pattern, guard, action: action_part });
+        }
+    }
+    if lower.starts_with("match default") || lower.starts_with("match otherwise") || lower.starts_with("match wildcard") {
+        let rest = strip_any_keyword(line, &["match default", "match otherwise", "match wildcard"])?;
+        let action = if rest.trim().is_empty() { None } else { Some(rest.trim().to_string()) };
+        return Some(StatementHint::MatchWildcard { action });
+    }
+    None
+}
+
+fn try_extract_guard(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("guard ") {
+        let rest = strip_keyword(line, "guard")?;
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" else ") {
+            let condition = rest[..idx].trim().to_string();
+            let action = rest[idx + 6..].trim().to_string();
+            if !condition.is_empty() && !action.is_empty() {
+                return Some(StatementHint::GuardClause { condition, action });
+            }
+        }
+    }
+    if lower.starts_with("early return if ") {
+        let condition = line[16..].trim().to_string();
+        if !condition.is_empty() {
+            return Some(StatementHint::GuardClause { condition, action: "return".to_string() });
+        }
+    }
+    None
+}
+
+fn try_extract_list_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create linked list") || lower.starts_with("linked list") {
+        let rest = strip_any_keyword(line, &["create linked list", "linked list"])?;
+        let name = sanitize_identifier(rest.split_whitespace().last().unwrap_or("list"));
+        let element_type = if rest.to_lowercase().contains(" of ") {
+            Some(rest.split(" of ").last().unwrap_or("").trim().to_string())
+        } else {
+            None
+        };
+        if !name.is_empty() {
+            return Some(StatementHint::LinkedListCreate { name, element_type });
+        }
+    }
+    if lower.starts_with("insert ") && lower.contains(" list ") {
+        let rest = strip_keyword(line, "insert")?;
+        if let Some((value, list)) = split_on_marker(rest, &[" into list ", " in list ", " to list "]) {
+            let list_name = sanitize_identifier(&list);
+            if !list_name.is_empty() && !value.is_empty() {
+                return Some(StatementHint::LinkedListInsert { list: list_name, value, position: None });
+            }
+        }
+    }
+    if lower.starts_with("remove ") && lower.contains(" list ") {
+        let rest = strip_keyword(line, "remove")?;
+        if let Some((position, list)) = split_on_marker(rest, &[" from list ", " in list "]) {
+            let list_name = sanitize_identifier(&list);
+            if !list_name.is_empty() {
+                return Some(StatementHint::LinkedListRemove { list: list_name, position });
+            }
+        }
+    }
+    if lower.starts_with("traverse list") || lower.starts_with("iterate list") {
+        let rest = strip_any_keyword(line, &["traverse list", "iterate list"])?;
+        let list = sanitize_identifier(rest.split_whitespace().next().unwrap_or("list"));
+        let iterator = if let Some(idx) = rest.to_lowercase().find(" as ") {
+            sanitize_identifier(&rest[idx + 4..])
+        } else {
+            "item".to_string()
+        };
+        if !list.is_empty() {
+            return Some(StatementHint::LinkedListTraverse { list, iterator });
+        }
+    }
+    None
+}
+
+fn try_extract_stack_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create stack") || lower.starts_with("stack ") {
+        let rest = strip_any_keyword(line, &["create stack", "stack"])?;
+        let name = sanitize_identifier(rest.split_whitespace().last().unwrap_or("stack"));
+        if !name.is_empty() {
+            return Some(StatementHint::StackCreate { name, element_type: None });
+        }
+    }
+    if lower.starts_with("push ") && lower.contains(" stack ") {
+        let rest = strip_keyword(line, "push")?;
+        if let Some((value, stack)) = split_on_marker(rest, &[" onto stack ", " to stack "]) {
+            let stack_name = sanitize_identifier(&stack);
+            if !stack_name.is_empty() {
+                return Some(StatementHint::StackPush { stack: stack_name, value });
+            }
+        }
+    }
+    if lower.starts_with("pop ") {
+        let rest = strip_keyword(line, "pop")?;
+        let stack = sanitize_identifier(rest.split_whitespace().last().unwrap_or("stack"));
+        if !stack.is_empty() {
+            return Some(StatementHint::StackPop { stack, target: None });
+        }
+    }
+    if lower.starts_with("peek ") {
+        let rest = strip_keyword(line, "peek")?;
+        let stack = sanitize_identifier(rest.split_whitespace().last().unwrap_or("stack"));
+        if !stack.is_empty() {
+            return Some(StatementHint::StackPeek { stack, target: None });
+        }
+    }
+    if lower.starts_with("stack is empty") || lower.starts_with("is stack empty") {
+        let stack = sanitize_identifier(line.split_whitespace().last().unwrap_or("stack"));
+        if !stack.is_empty() {
+            return Some(StatementHint::StackIsEmpty { stack });
+        }
+    }
+    None
+}
+
+fn try_extract_queue_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create queue") || lower.starts_with("queue ") {
+        let rest = strip_any_keyword(line, &["create queue", "queue"])?;
+        let name = sanitize_identifier(rest.split_whitespace().last().unwrap_or("queue"));
+        if !name.is_empty() {
+            return Some(StatementHint::QueueCreate { name, element_type: None });
+        }
+    }
+    if lower.starts_with("enqueue ") {
+        let rest = strip_keyword(line, "enqueue")?;
+        if let Some((value, queue)) = split_on_marker(rest, &[" into queue ", " to queue "]) {
+            let queue_name = sanitize_identifier(&queue);
+            if !queue_name.is_empty() {
+                return Some(StatementHint::QueueEnqueue { queue: queue_name, value });
+            }
+        }
+    }
+    if lower.starts_with("dequeue ") {
+        let rest = strip_keyword(line, "dequeue")?;
+        let queue = sanitize_identifier(rest.split_whitespace().last().unwrap_or("queue"));
+        if !queue.is_empty() {
+            return Some(StatementHint::QueueDequeue { queue, target: None });
+        }
+    }
+    None
+}
+
+fn try_extract_map_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create map") || lower.starts_with("create dictionary") || lower.starts_with("map ") {
+        let rest = strip_any_keyword(line, &["create map", "create dictionary", "map"])?;
+        let name = sanitize_identifier(rest.split_whitespace().last().unwrap_or("map"));
+        if !name.is_empty() {
+            return Some(StatementHint::MapCreate { name, key_type: None, value_type: None });
+        }
+    }
+    if lower.starts_with("put ") && lower.contains(" in map ") {
+        let rest = strip_keyword(line, "put")?;
+        if let Some((value, map_part)) = split_on_marker(rest, &[" in map ", " into map "]) {
+            if let Some((key, map_name)) = split_on_marker(&map_part, &[" at key ", " with key "]) {
+                let map = sanitize_identifier(&map_name);
+                if !map.is_empty() {
+                    return Some(StatementHint::MapPut { map, key, value });
+                }
+            }
+        }
+    }
+    if lower.starts_with("get ") && lower.contains(" from map ") {
+        let rest = strip_keyword(line, "get")?;
+        if let Some((key, map_name)) = split_on_marker(rest, &[" from map ", " in map "]) {
+            let map = sanitize_identifier(&map_name);
+            if !map.is_empty() {
+                return Some(StatementHint::MapGet { map, key, target: None });
+            }
+        }
+    }
+    if lower.starts_with("remove ") && lower.contains(" from map ") {
+        let rest = strip_keyword(line, "remove")?;
+        if let Some((key, map_name)) = split_on_marker(rest, &[" from map "]) {
+            let map = sanitize_identifier(&map_name);
+            if !map.is_empty() {
+                return Some(StatementHint::MapRemove { map, key });
+            }
+        }
+    }
+    if lower.starts_with("map contains") || lower.contains(" in map ") {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let key = tokens[tokens.len() - 1].to_string();
+            let map = sanitize_identifier(tokens[tokens.len() - 2]);
+            if !map.is_empty() {
+                return Some(StatementHint::MapContainsKey { map, key });
+            }
+        }
+    }
+    if lower.contains(" map contains ") {
+        let parts: Vec<&str> = line.split(" map contains ").collect();
+        if parts.len() == 2 {
+            let map = sanitize_identifier(parts[0].trim());
+            let key = parts[1].trim().to_string();
+            if !map.is_empty() && !key.is_empty() {
+                return Some(StatementHint::MapContainsKey { map, key });
+            }
+        }
+    }
+    if lower.starts_with("map keys") {
+        let map = sanitize_identifier(line.split_whitespace().last().unwrap_or("map"));
+        if !map.is_empty() {
+            return Some(StatementHint::MapKeys { map, target: None });
+        }
+    }
+    if lower.starts_with("map values") {
+        let map = sanitize_identifier(line.split_whitespace().last().unwrap_or("map"));
+        if !map.is_empty() {
+            return Some(StatementHint::MapValues { map, target: None });
+        }
+    }
+    None
+}
+
+fn try_extract_set_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create set") || lower.starts_with("set ") {
+        let rest = strip_any_keyword(line, &["create set", "set"])?;
+        let name = sanitize_identifier(rest.split_whitespace().last().unwrap_or("set"));
+        if !name.is_empty() {
+            return Some(StatementHint::SetCreate { name, element_type: None });
+        }
+    }
+    if lower.starts_with("add ") && lower.contains(" to set ") {
+        let rest = strip_keyword(line, "add")?;
+        if let Some((value, set_name)) = split_on_marker(rest, &[" to set "]) {
+            let set = sanitize_identifier(&set_name);
+            if !set.is_empty() {
+                return Some(StatementHint::SetAdd { set, value });
+            }
+        }
+    }
+    if lower.starts_with("remove ") && lower.contains(" from set ") {
+        let rest = strip_keyword(line, "remove")?;
+        if let Some((value, set_name)) = split_on_marker(rest, &[" from set "]) {
+            let set = sanitize_identifier(&set_name);
+            if !set.is_empty() {
+                return Some(StatementHint::SetRemove { set, value });
+            }
+        }
+    }
+    if lower.contains(" in set ") {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let value = tokens[tokens.len() - 3].to_string();
+            let set = sanitize_identifier(tokens[tokens.len() - 1]);
+            if !set.is_empty() {
+                return Some(StatementHint::SetContains { set, value });
+            }
+        }
+    }
+    if lower.contains(" set contains ") {
+        let parts: Vec<&str> = line.split(" set contains ").collect();
+        if parts.len() == 2 {
+            let set = sanitize_identifier(parts[0].trim());
+            let value = parts[1].trim().to_string();
+            if !set.is_empty() && !value.is_empty() {
+                return Some(StatementHint::SetContains { set, value });
+            }
+        }
+    }
+    if lower.starts_with("union ") && lower.contains(" and ") {
+        let rest = strip_keyword(line, "union")?;
+        let parts: Vec<&str> = rest.split(" and ").collect();
+        if parts.len() >= 2 {
+            let set1 = sanitize_identifier(parts[0]);
+            let set2 = sanitize_identifier(parts[1]);
+            if !set1.is_empty() && !set2.is_empty() {
+                let target = format!("{}_union_{}", set1, set2);
+                return Some(StatementHint::SetUnion { set1, set2, target });
+            }
+        }
+    }
+    if lower.starts_with("intersection ") && lower.contains(" and ") {
+        let rest = strip_keyword(line, "intersection")?;
+        let parts: Vec<&str> = rest.split(" and ").collect();
+        if parts.len() >= 2 {
+            let set1 = sanitize_identifier(parts[0]);
+            let set2 = sanitize_identifier(parts[1]);
+            if !set1.is_empty() && !set2.is_empty() {
+                let target = format!("{}_intersect_{}", set1, set2);
+                return Some(StatementHint::SetIntersection { set1, set2, target });
+            }
+        }
+    }
+    None
+}
+
+fn parse_visibility(lower: &str) -> Visibility {
+    if lower.contains("private") {
+        Visibility::Private
+    } else if lower.contains("protected") {
+        Visibility::Protected
+    } else {
+        Visibility::Public
+    }
+}
+
+fn try_extract_class_def(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("class ") || lower.starts_with("abstract class ") {
+        let is_abstract = lower.starts_with("abstract class");
+        let rest = strip_any_keyword(line, &["abstract class", "class"])?;
+        let mut name_part = rest;
+        let mut parent = None;
+        let mut interfaces = Vec::new();
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" extends ") {
+            name_part = &rest[..idx];
+            parent = Some(sanitize_identifier(&rest[idx + 9..]));
+        }
+        if let Some(idx) = lower_rest.find(" implements ") {
+            name_part = &rest[..idx];
+            let impls = rest[idx + 12..].split(',').map(|s| sanitize_identifier(s.trim())).filter(|s| !s.is_empty()).collect();
+            interfaces = impls;
+        }
+        let name = sanitize_identifier(name_part.trim());
+        if !name.is_empty() {
+            return Some(StatementHint::ClassDef { name, parent, interfaces, is_abstract });
+        }
+    }
+    None
+}
+
+fn try_extract_class_field(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.contains(" field ") || lower.contains(" property ") {
+        let visibility = parse_visibility(&lower);
+        let is_static = lower.contains(" static ");
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let name = sanitize_identifier(tokens.last().unwrap_or(&""));
+        if !name.is_empty() {
+            return Some(StatementHint::ClassField { name, type_hint: None, visibility, is_static, initial_value: None });
+        }
+    }
+    None
+}
+
+fn try_extract_class_method(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.contains(" method ") || lower.starts_with("method ") {
+        let visibility = parse_visibility(&lower);
+        let is_static = lower.contains(" static ");
+        let is_abstract = lower.contains(" abstract ");
+        let is_virtual = lower.contains(" virtual ");
+        let rest = strip_any_keyword(line, &["method", "public method", "private method", "protected method", "static method"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let name = sanitize_identifier(tokens[0]);
+            let (parameters, return_type) = parse_function_signature(&tokens[1..]);
+            return Some(StatementHint::ClassMethod { name, parameters, return_type, visibility, is_static, is_abstract, is_virtual });
+        }
+    }
+    None
+}
+
+fn try_extract_constructor(line: &str) -> Option<StatementHint> {
+    let rest = strip_any_keyword(line, &["constructor", "init", "initialize"])?;
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let (parameters, _) = parse_function_signature(&tokens);
+    return Some(StatementHint::Constructor { parameters, body: None });
+}
+
+fn try_extract_object_create(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("new ") || lower.starts_with("create object") || lower.starts_with("instantiate ") {
+        let rest = strip_any_keyword(line, &["new", "create object", "instantiate"])?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let class_name = sanitize_identifier(tokens[0]);
+            let mut variable = class_name.to_lowercase();
+            let mut arguments = Vec::new();
+            if let Some(idx) = rest.to_lowercase().find(" with ") {
+                arguments = rest[idx + 6..].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            if let Some(idx) = rest.to_lowercase().find(" as ") {
+                variable = sanitize_identifier(&rest[idx + 4..]);
+            }
+            if !class_name.is_empty() && !variable.is_empty() {
+                return Some(StatementHint::ObjectCreate { class_name, variable, arguments });
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_method_call(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("call ") && lower.contains(" on ") {
+        let rest = strip_keyword(line, "call")?;
+        if let Some(idx) = rest.to_lowercase().find(" on ") {
+            let method = sanitize_identifier(&rest[..idx]);
+            let object = sanitize_identifier(&rest[idx + 4..]);
+            if !method.is_empty() && !object.is_empty() {
+                return Some(StatementHint::MethodCall { object, method, arguments: Vec::new() });
+            }
+        }
+    }
+    if let Some(dot_idx) = line.find('.') {
+        let object = sanitize_identifier(&line[..dot_idx]);
+        let method = sanitize_identifier(&line[dot_idx + 1..]);
+        if !object.is_empty() && !method.is_empty() {
+            return Some(StatementHint::MethodCall { object, method, arguments: Vec::new() });
+        }
+    }
+    if lower.starts_with("property ") && lower.contains(" of ") {
+        let rest = strip_keyword(line, "property")?;
+        if let Some((prop, obj)) = split_on_marker(rest, &[" of "]) {
+            let object = sanitize_identifier(&obj);
+            if !object.is_empty() && !prop.is_empty() {
+                return Some(StatementHint::PropertyAccess { object, property: prop });
+            }
+        }
+    }
+    if lower.starts_with("set property ") && lower.contains(" to ") && lower.contains(" of ") {
+        let rest = strip_keyword(line, "set property")?;
+        let lower_rest = rest.to_lowercase();
+        if let Some(of_idx) = lower_rest.find(" of ") {
+            if let Some(to_idx) = lower_rest.find(" to ") {
+                let property = rest[..of_idx].trim().to_string();
+                let object = sanitize_identifier(&rest[of_idx + 4..to_idx]);
+                let value = rest[to_idx + 4..].trim().to_string();
+                if !object.is_empty() && !property.is_empty() && !value.is_empty() {
+                    return Some(StatementHint::PropertyAssign { object, property, value });
+                }
+            }
+        }
+    }
+    if lower == "this" || lower == "self" {
+        return Some(StatementHint::ThisReference);
+    }
+    if lower.starts_with("super") {
+        let rest = strip_keyword(line, "super").unwrap_or("").trim();
+        let method = if rest.is_empty() { None } else { Some(sanitize_identifier(rest)) };
+        return Some(StatementHint::SuperCall { method, arguments: Vec::new() });
+    }
+    None
+}
+
+fn try_extract_lambda(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("lambda ") {
+        let rest = line[7..].trim();
+        if let Some(idx) = rest.find(':') {
+            let params = rest[..idx].split(',').map(|s| sanitize_identifier(s.trim())).filter(|s| !s.is_empty()).collect();
+            let body = rest[idx + 1..].trim().to_string();
+            if !body.is_empty() {
+                return Some(StatementHint::Lambda { parameters: params, body, captures: Vec::new() });
+            }
+        }
+    }
+    if line.contains("=>") {
+        let parts: Vec<&str> = line.split("=>").collect();
+        if parts.len() == 2 {
+            let params = parts[0].split(',').map(|s| sanitize_identifier(s.trim())).filter(|s| !s.is_empty()).collect();
+            let body = parts[1].trim().to_string();
+            if !body.is_empty() {
+                return Some(StatementHint::Lambda { parameters: params, body, captures: Vec::new() });
+            }
+        }
+    }
+    None
+}
+
+fn try_extract_map_filter_reduce(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("map ") && lower.contains(" over ") {
+        let rest = strip_keyword(line, "map")?;
+        if let Some((transform, collection)) = split_on_marker(rest, &[" over "]) {
+            return Some(StatementHint::MapFunction { collection, transform, target: None });
+        }
+    }
+    if lower.starts_with("filter ") && lower.contains(" where ") {
+        let rest = strip_keyword(line, "filter")?;
+        if let Some((collection, predicate)) = split_on_marker(rest, &[" where "]) {
+            return Some(StatementHint::FilterFunction { collection, predicate, target: None });
+        }
+    }
+    if lower.starts_with("reduce ") && lower.contains(" with ") {
+        let rest = strip_keyword(line, "reduce")?;
+        if let Some((collection, reducer)) = split_on_marker(rest, &[" with "]) {
+            return Some(StatementHint::ReduceFunction { collection, reducer, initial: None, target: None });
+        }
+    }
+    if lower.starts_with("for each ") && lower.contains(" in ") {
+        let rest = strip_keyword(line, "for each")?;
+        if let Some((item, collection)) = split_on_marker(rest, &[" in "]) {
+            return Some(StatementHint::ForEachFunction { collection, action: format!("use {}", item) });
+        }
+    }
+    None
+}
+
+fn try_extract_thread_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create thread") || lower.starts_with("start thread") || lower.starts_with("spawn thread") {
+        let rest = strip_any_keyword(line, &["create thread", "start thread", "spawn thread"])?;
+        let function = rest.split_whitespace().last().unwrap_or("worker").to_string();
+        return Some(StatementHint::ThreadCreate { name: None, function, arguments: Vec::new() });
+    }
+    if lower.starts_with("join thread") {
+        let rest = strip_keyword(line, "join thread")?;
+        let thread = sanitize_identifier(rest);
+        if !thread.is_empty() {
+            return Some(StatementHint::ThreadJoin { thread });
+        }
+    }
+    if lower.starts_with("detach thread") {
+        let rest = strip_keyword(line, "detach thread")?;
+        let thread = sanitize_identifier(rest);
+        if !thread.is_empty() {
+            return Some(StatementHint::ThreadDetach { thread });
+        }
+    }
+    if lower.starts_with("sleep ") {
+        let rest = strip_keyword(line, "sleep")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            return Some(StatementHint::ThreadSleep { duration: tokens[0].to_string(), unit: tokens[1].to_string() });
+        }
+    }
+    None
+}
+
+fn try_extract_sync_ops(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("create mutex") {
+        let rest = strip_keyword(line, "create mutex")?;
+        let name = sanitize_identifier(rest);
+        if !name.is_empty() {
+            return Some(StatementHint::MutexCreate { name });
+        }
+    }
+    if lower.starts_with("lock mutex") {
+        let rest = strip_keyword(line, "lock mutex")?;
+        let mutex = sanitize_identifier(rest);
+        if !mutex.is_empty() {
+            return Some(StatementHint::MutexLock { mutex });
+        }
+    }
+    if lower.starts_with("unlock mutex") {
+        let rest = strip_keyword(line, "unlock mutex")?;
+        let mutex = sanitize_identifier(rest);
+        if !mutex.is_empty() {
+            return Some(StatementHint::MutexUnlock { mutex });
+        }
+    }
+    if lower.starts_with("try lock mutex") {
+        let rest = strip_keyword(line, "try lock mutex")?;
+        let mutex = sanitize_identifier(rest);
+        if !mutex.is_empty() {
+            return Some(StatementHint::MutexTryLock { mutex });
+        }
+    }
+    if lower.starts_with("create semaphore") {
+        let rest = strip_keyword(line, "create semaphore")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let name = sanitize_identifier(tokens[0]);
+            let initial = if tokens.len() > 1 { tokens[1].to_string() } else { "1".to_string() };
+            if !name.is_empty() {
+                return Some(StatementHint::SemaphoreCreate { name, initial });
+            }
+        }
+    }
+    if lower.starts_with("wait semaphore") {
+        let rest = strip_keyword(line, "wait semaphore")?;
+        let semaphore = sanitize_identifier(rest);
+        if !semaphore.is_empty() {
+            return Some(StatementHint::SemaphoreWait { semaphore });
+        }
+    }
+    if lower.starts_with("signal semaphore") {
+        let rest = strip_keyword(line, "signal semaphore")?;
+        let semaphore = sanitize_identifier(rest);
+        if !semaphore.is_empty() {
+            return Some(StatementHint::SemaphoreSignal { semaphore });
+        }
+    }
+    if lower.starts_with("create condition") {
+        let rest = strip_keyword(line, "create condition")?;
+        let name = sanitize_identifier(rest);
+        if !name.is_empty() {
+            return Some(StatementHint::ConditionCreate { name });
+        }
+    }
+    if lower.starts_with("wait condition") {
+        let rest = strip_keyword(line, "wait condition")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            let condition = sanitize_identifier(tokens[0]);
+            let mutex = sanitize_identifier(tokens[1]);
+            if !condition.is_empty() && !mutex.is_empty() {
+                return Some(StatementHint::ConditionWait { condition, mutex });
+            }
+        }
+    }
+    if lower.starts_with("signal condition") {
+        let rest = strip_keyword(line, "signal condition")?;
+        let condition = sanitize_identifier(rest);
+        if !condition.is_empty() {
+            return Some(StatementHint::ConditionSignal { condition });
+        }
+    }
+    if lower.starts_with("broadcast condition") {
+        let rest = strip_keyword(line, "broadcast condition")?;
+        let condition = sanitize_identifier(rest);
+        if !condition.is_empty() {
+            return Some(StatementHint::ConditionBroadcast { condition });
+        }
+    }
+    if lower.starts_with("atomic ") {
+        let rest = strip_keyword(line, "atomic")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 2 {
+            let name = sanitize_identifier(tokens[0]);
+            let initial = tokens[1..].join(" ");
+            if !name.is_empty() && !initial.is_empty() {
+                return Some(StatementHint::AtomicCreate { name, initial });
+            }
+        }
+    }
+    if lower.starts_with("atomic load") {
+        let rest = strip_keyword(line, "atomic load")?;
+        let atomic = sanitize_identifier(rest);
+        if !atomic.is_empty() {
+            return Some(StatementHint::AtomicLoad { atomic, target: None });
+        }
+    }
+    if lower.starts_with("atomic store") {
+        let rest = strip_keyword(line, "atomic store")?;
+        if let Some((value, atomic)) = split_on_marker(rest, &[" in "]) {
+            let name = sanitize_identifier(&atomic);
+            if !name.is_empty() {
+                return Some(StatementHint::AtomicStore { atomic: name, value });
+            }
+        }
+    }
+    if lower.starts_with("compare exchange") {
+        let rest = strip_keyword(line, "compare exchange")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if tokens.len() >= 3 {
+            let atomic = sanitize_identifier(tokens[0]);
+            let expected = tokens[1].to_string();
+            let desired = tokens[2].to_string();
+            if !atomic.is_empty() {
+                return Some(StatementHint::AtomicCompareExchange { atomic, expected, desired });
+            }
+        }
+    }
+    if lower.starts_with("atomic increment") {
+        let rest = strip_keyword(line, "atomic increment")?;
+        let atomic = sanitize_identifier(rest);
+        if !atomic.is_empty() {
+            return Some(StatementHint::AtomicIncrement { atomic });
+        }
+    }
+    if lower.starts_with("atomic decrement") {
+        let rest = strip_keyword(line, "atomic decrement")?;
+        let atomic = sanitize_identifier(rest);
+        if !atomic.is_empty() {
+            return Some(StatementHint::AtomicDecrement { atomic });
+        }
+    }
+    None
+}
+
+fn try_extract_async(line: &str) -> Option<StatementHint> {
+    let lower = line.to_lowercase();
+    if lower.starts_with("async function") {
+        let rest = strip_keyword(line, "async function")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let name = sanitize_identifier(tokens[0]);
+            let (parameters, return_type) = parse_function_signature(&tokens[1..]);
+            return Some(StatementHint::AsyncFunction { name, parameters, return_type });
+        }
+    }
+    if lower.starts_with("await ") {
+        let rest = strip_keyword(line, "await")?;
+        if let Some((expr, target)) = split_on_marker(rest, &[" into ", " as "]) {
+            return Some(StatementHint::AwaitExpression { expression: expr, target: Some(sanitize_identifier(&target)) });
+        }
+        return Some(StatementHint::AwaitExpression { expression: rest.trim().to_string(), target: None });
+    }
+    if lower.starts_with("promise ") && lower.contains(" then ") {
+        let rest = strip_keyword(line, "promise")?;
+        if let Some((promise, handler)) = split_on_marker(rest, &[" then "]) {
+            return Some(StatementHint::PromiseThen { promise, handler });
+        }
+    }
+    if lower.starts_with("promise ") && lower.contains(" catch ") {
+        let rest = strip_keyword(line, "promise")?;
+        if let Some((promise, handler)) = split_on_marker(rest, &[" catch "]) {
+            return Some(StatementHint::PromiseCatch { promise, handler });
+        }
+    }
+    if lower.starts_with("promise all ") {
+        let rest = strip_keyword(line, "promise all")?;
+        if let Some((list, target)) = split_on_marker(rest, &[" into ", " as "]) {
+            let promises: Vec<String> = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let target_name = sanitize_identifier(&target);
+            if !promises.is_empty() && !target_name.is_empty() {
+                return Some(StatementHint::PromiseAll { promises, target: target_name });
+            }
+        }
+    }
+    if lower.starts_with("promise race ") {
+        let rest = strip_keyword(line, "promise race")?;
+        if let Some((list, target)) = split_on_marker(rest, &[" into ", " as "]) {
+            let promises: Vec<String> = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let target_name = sanitize_identifier(&target);
+            if !promises.is_empty() && !target_name.is_empty() {
+                return Some(StatementHint::PromiseRace { promises, target: target_name });
+            }
+        }
+    }
+    if lower.starts_with("create promise") {
+        let rest = strip_keyword(line, "create promise")?;
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        if !tokens.is_empty() {
+            let name = sanitize_identifier(tokens[0]);
+            let executor = if tokens.len() > 1 { tokens[1..].join(" ") } else { "executor".to_string() };
+            if !name.is_empty() {
+                return Some(StatementHint::PromiseCreate { name, executor });
+            }
+        }
+    }
+    None
+}
+
+fn parse_doc_type(lower: &str) -> DocType {
+    if lower.contains("param") {
+        DocType::Param
+    } else if lower.contains("return") {
+        DocType::Return
+    } else if lower.contains("throw") || lower.contains("raises") {
+        DocType::Throws
+    } else if lower.contains("detail") {
+        DocType::Detailed
+    } else {
+        DocType::Brief
+    }
+}
+
+fn try_extract_doc_comment(line: &str) -> Option<StatementHint> {
+    if let Some(rest) = strip_any_keyword(line, &["document", "docstring", "describe", "explain"]) {
+        let doc_type = parse_doc_type(&line.to_lowercase());
+        let text = rest.trim().to_string();
+        if !text.is_empty() {
+            return Some(StatementHint::DocComment { text, doc_type });
+        }
+    }
+    None
+}
+
+fn try_extract_doc_function(line: &str) -> Option<StatementHint> {
+    if let Some(rest) = strip_any_keyword(line, &["document function", "doc function"]) {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        let brief = if tokens.is_empty() { "function".to_string() } else { format!("Function {}", tokens[0]) };
+        return Some(StatementHint::DocFunction { brief, params: Vec::new(), returns: None, throws: Vec::new(), examples: Vec::new() });
+    }
+    None
+}
+
+fn try_extract_doc_class(line: &str) -> Option<StatementHint> {
+    if let Some(rest) = strip_any_keyword(line, &["document class", "doc class"]) {
+        let brief = format!("Class {}", rest.trim());
+        return Some(StatementHint::DocClass { brief, detailed: None, author: None, version: None });
+    }
+    None
+}
+
 fn try_extract_stdlib_call(line: &str, included_headers: &std::collections::HashSet<String>) -> Option<StatementHint> {
     let db = FunctionDatabase::core();
     let FunctionMatch { name, args } = match_function_call(line, included_headers, db)?;
@@ -4686,6 +6887,13 @@ pub fn get_read_write_info(hint: &StatementHint) -> ReadWriteInfo {
             ReadWriteInfo {
                 writes: vec![],  // Not a new declaration
                 reads: vec![target.clone()],  // Must exist to modify
+            }
+        }
+
+        StatementHint::PrePostModify { target, .. } => {
+            ReadWriteInfo {
+                writes: vec![],
+                reads: vec![target.clone()],
             }
         }
         
@@ -5055,6 +7263,75 @@ mod tests {
     fn test_print() {
         let hint = extract(&make_request("print hello world"));
         assert!(matches!(hint, StatementHint::Print { .. }));
+    }
+
+    #[test]
+    fn test_error_handling_ext() {
+        let hint = extract(&make_request("try"));
+        assert!(matches!(hint, StatementHint::TryBlock));
+
+        let hint = extract(&make_request("except IOError as e"));
+        assert!(matches!(hint, StatementHint::ExceptBlock { exception_type: Some(t), variable: Some(v) } if t == "IOError" && v == "e"));
+
+        let hint = extract(&make_request("raise ValueError with bad"));
+        assert!(matches!(hint, StatementHint::RaiseException { exception_type, message: Some(msg) } if exception_type == "ValueError" && msg == "bad"));
+    }
+
+    #[test]
+    fn test_testing_patterns() {
+        let hint = extract(&make_request("test function add"));
+        assert!(matches!(hint, StatementHint::TestFunction { name, .. } if name == "add"));
+
+        let hint = extract(&make_request("assert x equals y"));
+        assert!(matches!(hint, StatementHint::TestAssertEqual { left, right, .. } if left == "x" && right == "y"));
+    }
+
+    #[test]
+    fn test_advanced_control_flow() {
+        let hint = extract(&make_request("break outer"));
+        assert!(matches!(hint, StatementHint::LabeledBreak { label } if label == "outer"));
+
+        let hint = extract(&make_request("match value"));
+        assert!(matches!(hint, StatementHint::MatchBlock { expression } if expression == "value"));
+
+        let hint = extract(&make_request("guard x > 0 else return"));
+        assert!(matches!(hint, StatementHint::GuardClause { condition, action } if condition == "x > 0" && action == "return"));
+    }
+
+    #[test]
+    fn test_data_structures() {
+        let hint = extract(&make_request("create stack mystack"));
+        assert!(matches!(hint, StatementHint::StackCreate { name, .. } if name == "mystack"));
+
+        let hint = extract(&make_request("put value in map mymap at key k"));
+        assert!(matches!(hint, StatementHint::MapPut { map, key, value } if map == "mymap" && key == "k" && value == "value"));
+    }
+
+    #[test]
+    fn test_oop_and_lambda() {
+        let hint = extract(&make_request("class Foo"));
+        assert!(matches!(hint, StatementHint::ClassDef { name, .. } if name == "Foo"));
+
+        let hint = extract(&make_request("new Foo as bar"));
+        assert!(matches!(hint, StatementHint::ObjectCreate { class_name, variable, .. } if class_name == "Foo" && variable == "bar"));
+
+        let hint = extract(&make_request("x => x + 1"));
+        assert!(matches!(hint, StatementHint::Lambda { .. }));
+    }
+
+    #[test]
+    fn test_concurrency_and_async() {
+        let hint = extract(&make_request("create thread worker"));
+        assert!(matches!(hint, StatementHint::ThreadCreate { function, .. } if function == "worker"));
+
+        let hint = extract(&make_request("async function fetch"));
+        assert!(matches!(hint, StatementHint::AsyncFunction { name, .. } if name == "fetch"));
+    }
+
+    #[test]
+    fn test_documentation() {
+        let hint = extract(&make_request("document this is a test"));
+        assert!(matches!(hint, StatementHint::DocComment { .. }));
     }
 }
 

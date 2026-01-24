@@ -13,6 +13,58 @@ use regex::Regex;
 use crate::hints::{ArithmeticOp as HintArithmeticOp, StatementHint};
 use crate::models::TranslateLineRequest;
 
+#[derive(Debug, Clone)]
+pub struct CodeStyle {
+    pub indent_style: IndentStyle,
+    pub indent_width: usize,
+    pub brace_style: BraceStyle,
+    pub max_line_length: usize,
+    pub naming_convention: NamingConvention,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum IndentStyle {
+    Tabs,
+    Spaces,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BraceStyle {
+    KAndR,
+    Allman,
+    GNU,
+    Whitesmiths,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum NamingConvention {
+    CamelCase,
+    SnakeCase,
+    PascalCase,
+}
+
+impl Default for CodeStyle {
+    fn default() -> Self {
+        Self {
+            indent_style: IndentStyle::Spaces,
+            indent_width: 4,
+            brace_style: BraceStyle::KAndR,
+            max_line_length: 100,
+            naming_convention: NamingConvention::SnakeCase,
+        }
+    }
+}
+
+static DEFAULT_STYLE: Lazy<CodeStyle> = Lazy::new(CodeStyle::default);
+
+fn indent(level: usize) -> String {
+    let style = &*DEFAULT_STYLE;
+    match style.indent_style {
+        IndentStyle::Tabs => "\t".repeat(level),
+        IndentStyle::Spaces => " ".repeat(style.indent_width * level),
+    }
+}
+
 /// Translate an inline action string (like "print a") into C code
 fn translate_inline_action(action: &str) -> String {
     let trimmed = action.trim();
@@ -1017,37 +1069,39 @@ fn normalize_action(action: Option<&str>) -> Option<Action> {
 
 fn build_c_body_line(action: Option<&str>, iterator: Option<&str>) -> String {
     let iter_name = iterator.unwrap_or("i");
+    let pad = indent(1);
     match normalize_action(action) {
-        Some(Action::Literal(expr)) => format!("    printf(\"{}\\n\");", expr),
-        Some(Action::Identifier(expr)) => format!("    printf(\"%s\\n\", {expr});"),
-        Some(Action::CollectionIndex(expr)) => format!("    printf(\"%d\\n\", {expr}[{iter_name}]);"),
+        Some(Action::Literal(expr)) => format!("{pad}printf(\"{}\\n\");", expr),
+        Some(Action::Identifier(expr)) => format!("{pad}printf(\"%s\\n\", {expr});"),
+        Some(Action::CollectionIndex(expr)) => format!("{pad}printf(\"%d\\n\", {expr}[{iter_name}]);"),
         Some(Action::Printf(expr)) => {
             if expr.trim_end().ends_with(';') {
-                format!("    {expr}")
+                format!("{pad}{expr}")
             } else {
-                format!("    {expr};")
+                format!("{pad}{expr};")
             }
         }
         Some(Action::Raw(expr)) => {
             if expr.trim_end().ends_with(';') {
-                format!("    {expr}")
+                format!("{pad}{expr}")
             } else {
-                format!("    {expr};")
+                format!("{pad}{expr};")
             }
         }
-        None => "    ".to_string(),
+        None => pad,
     }
 }
 
 fn build_python_body_line(action: Option<&str>, iterator: Option<&str>) -> String {
     let iter_name = iterator.unwrap_or("i");
+    let pad = indent(1);
     match normalize_action(action) {
-        Some(Action::Literal(expr)) => format!("    print(\"{}\")", expr),
-        Some(Action::Identifier(expr)) => format!("    print({expr})"),
-        Some(Action::CollectionIndex(expr)) => format!("    print({expr}[{iter_name}])"),
-        Some(Action::Printf(expr)) => format!("    print({expr})"),
-        Some(Action::Raw(expr)) => format!("    {expr}"),
-        None => "    pass".to_string(),
+        Some(Action::Literal(expr)) => format!("{pad}print(\"{}\")", expr),
+        Some(Action::Identifier(expr)) => format!("{pad}print({expr})"),
+        Some(Action::CollectionIndex(expr)) => format!("{pad}print({expr}[{iter_name}])"),
+        Some(Action::Printf(expr)) => format!("{pad}print({expr})"),
+        Some(Action::Raw(expr)) => format!("{pad}{expr}"),
+        None => format!("{pad}pass"),
     }
 }
 
@@ -1515,6 +1569,18 @@ fn normalize_array_index_python(array: &str, index: &str) -> String {
 static FLOAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\d+\.\d+").expect("valid float literal regex")
 });
+static FLOAT_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d+(?:\.\d+)?f$").expect("valid float suffix regex")
+});
+static LONG_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d+l$").expect("valid long suffix regex")
+});
+static UNSIGNED_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d+u$").expect("valid unsigned suffix regex")
+});
+static UNSIGNED_LONG_SUFFIX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\d+ul$|^\d+lu$").expect("valid unsigned long suffix regex")
+});
 
 fn infer_c_type_from_expression(expr: &str) -> Option<&'static str> {
     let trimmed = expr.trim();
@@ -1529,16 +1595,34 @@ fn infer_c_type_from_expression(expr: &str) -> Option<&'static str> {
     if lower.starts_with('\'') && lower.ends_with('\'') {
         return Some("char");
     }
+    if UNSIGNED_LONG_SUFFIX_RE.is_match(&lower) {
+        return Some("unsigned long");
+    }
+    if LONG_SUFFIX_RE.is_match(&lower) {
+        return Some("long");
+    }
+    if UNSIGNED_SUFFIX_RE.is_match(&lower) {
+        return Some("unsigned int");
+    }
+    if FLOAT_SUFFIX_RE.is_match(&lower) {
+        return Some("float");
+    }
     if FLOAT_LITERAL_RE.is_match(&lower) {
         return Some("double");
+    }
+    if lower.contains("sizeof(") || lower.contains("strlen(") {
+        return Some("size_t");
+    }
+    if lower.contains("malloc(") || lower.contains("calloc(") || lower.contains("realloc(") {
+        return Some("void *");
     }
     for func in ["sqrt(", "pow(", "sin(", "cos(", "tan(", "exp(", "log("] {
         if lower.contains(func) {
             return Some("double");
         }
     }
-    if lower.contains("true") || lower.contains("false") {
-        return Some("int");
+    if lower == "true" || lower == "false" {
+        return Some("bool");
     }
     if ["==", "!=", ">=", "<=", "<", ">", "&&", "||"].iter().any(|op| lower.contains(op)) {
         return Some("int");
@@ -1552,6 +1636,7 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
         StatementHint::Declaration {
             names,
             type_hint,
+            qualifiers,
             initial_value,
             is_array,
             array_size,
@@ -1565,12 +1650,17 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 .and_then(|v| infer_c_type_from_expression(v))
                 .map(|ty| ty as &str);
             let c_type = type_hint.as_deref().or(inferred).unwrap_or("int");
+            let qualifier_prefix = if qualifiers.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", qualifiers.join(" "))
+            };
             
             if *is_array {
                 let size = array_size.as_deref().unwrap_or("10");
                 let decls: Vec<String> = names
                     .iter()
-                    .map(|name| format!("{} {}[{}];", c_type, name, size))
+                    .map(|name| format!("{}{} {}[{}];", qualifier_prefix, c_type, name, size))
                     .collect();
                 Ok(decls.join("\n"))
             } else {
@@ -1584,7 +1674,7 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                         }
                     })
                     .collect();
-                Ok(format!("{} {};", c_type, declarations.join(", ")))
+                Ok(format!("{}{} {};", qualifier_prefix, c_type, declarations.join(", ")))
             }
         }
 
@@ -1630,13 +1720,18 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             let mut lines = Vec::new();
             for var in variables {
                 lines.push(format!("int {};", var));
-                lines.push(format!("scanf(\"%d\", &{});", var));
+                lines.push(format!("if (scanf(\"%d\", &{}) != 1) {{ fprintf(stderr, \"Invalid input\\n\"); return 1; }}", var));
             }
             Ok(lines.join("\n"))
         }
 
         StatementHint::FileOpen { var_name, path, mode } => {
-            Ok(format!("FILE *{} = fopen(\"{}\", \"{}\");", var_name, path.trim_matches('"'), mode))
+            Ok(format!(
+                "FILE *{var} = fopen(\"{path}\", \"{mode}\");\nif ({var} == NULL) {{ perror(\"fopen failed\"); return 1; }}",
+                var = var_name,
+                path = path.trim_matches('"'),
+                mode = mode
+            ))
         }
         StatementHint::FileClose { var_name } => Ok(format!("fclose({});", var_name)),
         StatementHint::FileRead { var_name, buffer, size } => {
@@ -1838,6 +1933,15 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             }
         }
 
+        StatementHint::PrePostModify { target, delta, position } => {
+            let op = if *delta > 0 { "++" } else { "--" };
+            let expr = match position {
+                crate::hints::IncDecPosition::Pre => format!("{}{}", op, target),
+                crate::hints::IncDecPosition::Post => format!("{}{}", target, op),
+            };
+            Ok(format!("{};", expr))
+        }
+
         StatementHint::FunctionDef {
             name,
             parameters,
@@ -1889,6 +1993,11 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("struct {} {{\n{}\n}};", name, body))
         }
 
+        StatementHint::BitfieldDecl { name, type_hint, width } => {
+            let ty = type_hint.as_deref().unwrap_or("unsigned int");
+            Ok(format!("{} {} : {};", ty, name, width))
+        }
+
         StatementHint::StructAccess { object, field } => {
             Ok(format!("{}.{}", object, field))
         }
@@ -1906,6 +2015,19 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             }
         }
 
+        StatementHint::AnonymousStruct { parent, fields } => {
+            let body = if fields.is_empty() {
+                "    int value;".to_string()
+            } else {
+                fields.iter().map(|(ty, n)| format!("    {} {};", ty, n)).collect::<Vec<_>>().join("\n")
+            };
+            if let Some(parent_name) = parent {
+                Ok(format!("struct {} {{\n    struct {{\n{}\n    }};\n}};", parent_name, body))
+            } else {
+                Ok(format!("struct {{\n{}\n}};", body))
+            }
+        }
+
         StatementHint::UnionDef { name, fields } => {
             let body = if fields.is_empty() {
                 "    int value;".to_string()
@@ -1913,6 +2035,19 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 fields.iter().map(|(ty, n)| format!("    {} {};", ty, n)).collect::<Vec<_>>().join("\n")
             };
             Ok(format!("union {} {{\n{}\n}};", name, body))
+        }
+
+        StatementHint::AnonymousUnion { parent, fields } => {
+            let body = if fields.is_empty() {
+                "    int value;".to_string()
+            } else {
+                fields.iter().map(|(ty, n)| format!("    {} {};", ty, n)).collect::<Vec<_>>().join("\n")
+            };
+            if let Some(parent_name) = parent {
+                Ok(format!("union {} {{\n    union {{\n{}\n    }};\n}};", parent_name, body))
+            } else {
+                Ok(format!("union {{\n{}\n}};", body))
+            }
         }
 
         StatementHint::StructArray { struct_name, var_name, size } => {
@@ -2160,6 +2295,13 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
         }
 
         StatementHint::Assert { expression } => Ok(format!("assert({});", expression)),
+        StatementHint::StaticAssert { condition, message } => {
+            let msg = message.as_deref().unwrap_or("static assertion failed");
+            Ok(format!("_Static_assert({}, \"{}\");", condition, msg))
+        }
+        StatementHint::CommaExpression { expressions } => {
+            Ok(format!("({})", expressions.join(", ")))
+        }
         StatementHint::Perror { message } => {
             if let Some(m) = message {
                 Ok(format!("perror(\"{}\");", m.trim_matches('\"')))
@@ -2224,6 +2366,24 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("{} {}[] = {{ {} }};", ty, name, values.join(", ")))
         }
 
+        StatementHint::DesignatedInit { type_hint, name, designators } => {
+            let ty = type_hint.as_deref().unwrap_or("int");
+            let entries: Vec<String> = designators
+                .iter()
+                .map(|(d, v)| format!("{} = {}", d, v))
+                .collect();
+            Ok(format!("{} {}[] = {{ {} }};", ty, name, entries.join(", ")))
+        }
+
+        StatementHint::CompoundLiteral { type_hint, values, fields, is_array } => {
+            if *is_array {
+                Ok(format!("({}[]){{ {} }}", type_hint, values.join(", ")))
+            } else {
+                let pairs: Vec<String> = fields.iter().map(|(k, v)| format!(".{} = {}", k, v)).collect();
+                Ok(format!("({}){{ {} }}", type_hint, pairs.join(", ")))
+            }
+        }
+
         StatementHint::MultiDimAccess { array, indices, value } => {
             let idx = indices.iter().map(|d| format!("[{}]", d)).collect::<Vec<_>>().join("");
             if let Some(v) = value {
@@ -2241,6 +2401,300 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
             Ok(format!("{} ? {} : {}", condition, true_value, false_value))
         }
 
+        StatementHint::TryBlock => Ok("/* try */".to_string()),
+        StatementHint::ExceptBlock { exception_type, variable } => {
+            let ex = exception_type.clone().unwrap_or_else(|| "Exception".to_string());
+            if let Some(var) = variable {
+                Ok(format!("/* catch {} as {} */", ex, var))
+            } else {
+                Ok(format!("/* catch {} */", ex))
+            }
+        }
+        StatementHint::FinallyBlock => Ok("/* finally */".to_string()),
+        StatementHint::RaiseException { exception_type, message } => {
+            if let Some(msg) = message {
+                Ok(format!("/* raise {}: {} */", exception_type, msg))
+            } else {
+                Ok(format!("/* raise {} */", exception_type))
+            }
+        }
+        StatementHint::ErrorCheck { function_call, .. } => {
+            Ok(format!("/* check error for {} */", function_call))
+        }
+        StatementHint::SetJmp { buffer } => Ok(format!("setjmp({});", buffer)),
+        StatementHint::LongJmp { buffer, value } => Ok(format!("longjmp({}, {});", buffer, value)),
+
+        StatementHint::TestFunction { name, .. } => Ok(format!("void {}(void) {{\n}}", name)),
+        StatementHint::TestAssert { expression, .. } => Ok(format!("assert({});", expression)),
+        StatementHint::TestAssertEqual { left, right, .. } => Ok(format!("assert({} == {});", left, right)),
+        StatementHint::TestAssertNotEqual { left, right } => Ok(format!("assert({} != {});", left, right)),
+        StatementHint::TestAssertTrue { expression } => Ok(format!("assert({});", expression)),
+        StatementHint::TestAssertFalse { expression } => Ok(format!("assert(!({}));", expression)),
+        StatementHint::TestSetup { name } => Ok(format!("void {}(void) {{\n}}", name)),
+        StatementHint::TestTeardown { name } => Ok(format!("void {}(void) {{\n}}", name)),
+        StatementHint::MockFunction { name, return_value } => Ok(format!("int {}(void) {{ return {}; }}", name, return_value)),
+
+        StatementHint::LabeledBreak { label } => Ok(format!("goto {};", label)),
+        StatementHint::LabeledContinue { label } => Ok(format!("goto {};", label)),
+        StatementHint::LabeledLoop { label, loop_hint } => {
+            let loop_code = translate_hint_c(loop_hint)?;
+            Ok(format!("{}:\n{}", label, loop_code))
+        }
+        StatementHint::MatchBlock { expression } => Ok(format!("switch ({}) {{\n}}", expression)),
+        StatementHint::MatchCase { pattern, guard, action } => {
+            let guard_comment = guard.as_ref().map(|g| format!(" /* if {} */", g)).unwrap_or_default();
+            let act = action.as_ref().map(|a| format!(" {};", a)).unwrap_or_else(|| " break;".to_string());
+            Ok(format!("case {}:{}{}", pattern, guard_comment, act))
+        }
+        StatementHint::MatchWildcard { action } => {
+            let act = action.as_ref().map(|a| format!(" {};", a)).unwrap_or_else(|| " break;".to_string());
+            Ok(format!("default:{}", act))
+        }
+        StatementHint::GuardClause { condition, action } => {
+            Ok(format!("if (!({})) {{ {}{} }}", condition, action, if action.ends_with(';') { "" } else { ";" }))
+        }
+        StatementHint::ConditionalChain { conditions, else_action } => {
+            if conditions.is_empty() {
+                return Err(anyhow!("Conditional chain requires conditions"));
+            }
+            let mut lines = Vec::new();
+            for (i, (cond, act)) in conditions.iter().enumerate() {
+                let keyword = if i == 0 { "if" } else { "else if" };
+                lines.push(format!("{} ({}) {{ {}{} }}", keyword, cond, act, if act.ends_with(';') { "" } else { ";" }));
+            }
+            if let Some(act) = else_action {
+                lines.push(format!("else {{ {}{} }}", act, if act.ends_with(';') { "" } else { ";" }));
+            }
+            Ok(lines.join(" "))
+        }
+
+        StatementHint::LinkedListCreate { name, .. } => Ok(format!("LinkedList *{} = linked_list_create();", name)),
+        StatementHint::LinkedListInsert { list, value, position } => {
+            if let Some(pos) = position {
+                Ok(format!("linked_list_insert_at({}, {}, {});", list, value, pos))
+            } else {
+                Ok(format!("linked_list_insert({}, {});", list, value))
+            }
+        }
+        StatementHint::LinkedListRemove { list, position } => Ok(format!("linked_list_remove({}, {});", list, position)),
+        StatementHint::LinkedListTraverse { list, iterator } => Ok(format!("/* traverse {} with {} */", list, iterator)),
+        StatementHint::StackCreate { name, .. } => Ok(format!("Stack *{} = stack_create();", name)),
+        StatementHint::StackPush { stack, value } => Ok(format!("stack_push({}, {});", stack, value)),
+        StatementHint::StackPop { stack, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = stack_pop({});", t, stack))
+            } else {
+                Ok(format!("stack_pop({});", stack))
+            }
+        }
+        StatementHint::StackPeek { stack, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = stack_peek({});", t, stack))
+            } else {
+                Ok(format!("stack_peek({});", stack))
+            }
+        }
+        StatementHint::StackIsEmpty { stack } => Ok(format!("stack_is_empty({})", stack)),
+        StatementHint::QueueCreate { name, .. } => Ok(format!("Queue *{} = queue_create();", name)),
+        StatementHint::QueueEnqueue { queue, value } => Ok(format!("queue_enqueue({}, {});", queue, value)),
+        StatementHint::QueueDequeue { queue, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = queue_dequeue({});", t, queue))
+            } else {
+                Ok(format!("queue_dequeue({});", queue))
+            }
+        }
+        StatementHint::MapCreate { name, .. } => Ok(format!("Map *{} = map_create();", name)),
+        StatementHint::MapPut { map, key, value } => Ok(format!("map_put({}, {}, {});", map, key, value)),
+        StatementHint::MapGet { map, key, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = map_get({}, {});", t, map, key))
+            } else {
+                Ok(format!("map_get({}, {});", map, key))
+            }
+        }
+        StatementHint::MapRemove { map, key } => Ok(format!("map_remove({}, {});", map, key)),
+        StatementHint::MapContainsKey { map, key } => Ok(format!("map_contains({}, {})", map, key)),
+        StatementHint::MapKeys { map, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = map_keys({});", t, map))
+            } else {
+                Ok(format!("map_keys({});", map))
+            }
+        }
+        StatementHint::MapValues { map, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = map_values({});", t, map))
+            } else {
+                Ok(format!("map_values({});", map))
+            }
+        }
+        StatementHint::SetCreate { name, .. } => Ok(format!("Set *{} = set_create();", name)),
+        StatementHint::SetAdd { set, value } => Ok(format!("set_add({}, {});", set, value)),
+        StatementHint::SetRemove { set, value } => Ok(format!("set_remove({}, {});", set, value)),
+        StatementHint::SetContains { set, value } => Ok(format!("set_contains({}, {})", set, value)),
+        StatementHint::SetUnion { set1, set2, target } => Ok(format!("Set *{} = set_union({}, {});", target, set1, set2)),
+        StatementHint::SetIntersection { set1, set2, target } => Ok(format!("Set *{} = set_intersection({}, {});", target, set1, set2)),
+        StatementHint::TreeNode { name, value, left, right } => {
+            let l = left.clone().unwrap_or_else(|| "NULL".to_string());
+            let r = right.clone().unwrap_or_else(|| "NULL".to_string());
+            Ok(format!("TreeNode {} = {{ {}, {}, {} }};", name, value, l, r))
+        }
+        StatementHint::TreeInsert { tree, value } => Ok(format!("tree_insert({}, {});", tree, value)),
+        StatementHint::TreeSearch { tree, value } => Ok(format!("tree_search({}, {});", tree, value)),
+        StatementHint::TreeTraverse { tree, order } => Ok(format!("tree_traverse({}, \"{}\");", tree, order)),
+
+        StatementHint::ClassDef { name, parent, interfaces, .. } => {
+            let mut comment = String::new();
+            if let Some(p) = parent {
+                comment.push_str(&format!(" /* extends {} */", p));
+            }
+            if !interfaces.is_empty() {
+                comment.push_str(&format!(" /* implements {} */", interfaces.join(", ")));
+            }
+            Ok(format!("struct {} {{ }};{}", name, comment))
+        }
+        StatementHint::ClassField { name, type_hint, .. } => {
+            let ty = type_hint.as_deref().unwrap_or("int");
+            Ok(format!("{} {};", ty, name))
+        }
+        StatementHint::ClassMethod { name, parameters, return_type, .. } => {
+            let ret = return_type.as_deref().unwrap_or("void");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters.iter().map(|(t, n)| format!("{} {}", t, n)).collect::<Vec<_>>().join(", ")
+            };
+            Ok(format!("{} {}({});", ret, name, params))
+        }
+        StatementHint::Constructor { .. } => Ok("/* constructor */".to_string()),
+        StatementHint::Destructor { .. } => Ok("/* destructor */".to_string()),
+        StatementHint::InterfaceDef { name, .. } => Ok(format!("/* interface {} */", name)),
+        StatementHint::InterfaceMethod { name, parameters, return_type } => {
+            let ret = return_type.as_deref().unwrap_or("void");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters.iter().map(|(t, n)| format!("{} {}", t, n)).collect::<Vec<_>>().join(", ")
+            };
+            Ok(format!("{} {}({});", ret, name, params))
+        }
+        StatementHint::ObjectCreate { class_name, variable, .. } => {
+            Ok(format!("{} *{} = malloc(sizeof({}));", class_name, variable, class_name))
+        }
+        StatementHint::MethodCall { object, method, arguments } => {
+            if arguments.is_empty() {
+                Ok(format!("{}(&{});", method, object))
+            } else {
+                Ok(format!("{}(&{}, {});", method, object, arguments.join(", ")))
+            }
+        }
+        StatementHint::PropertyAccess { object, property } => Ok(format!("{}.{}", object, property)),
+        StatementHint::PropertyAssign { object, property, value } => Ok(format!("{}.{} = {};", object, property, value)),
+        StatementHint::SuperCall { .. } => Ok("/* super call */".to_string()),
+        StatementHint::ThisReference => Ok("this".to_string()),
+
+        StatementHint::Lambda { .. } => Ok("/* lambda */".to_string()),
+        StatementHint::HigherOrderFunction { function, callback, collection } => {
+            if let Some(col) = collection {
+                Ok(format!("{}({}, {});", function, col, callback))
+            } else {
+                Ok(format!("{}({});", function, callback))
+            }
+        }
+        StatementHint::MapFunction { collection, transform, target } => {
+            let expr = format!("map({}, {})", transform, collection);
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::FilterFunction { collection, predicate, target } => {
+            let expr = format!("filter({}, {})", predicate, collection);
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::ReduceFunction { collection, reducer, initial, target } => {
+            let expr = if let Some(init) = initial {
+                format!("reduce({}, {}, {})", reducer, collection, init)
+            } else {
+                format!("reduce({}, {})", reducer, collection)
+            };
+            if let Some(t) = target {
+                Ok(format!("{} = {};", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::ForEachFunction { collection, action } => {
+            Ok(format!("for_each({}, {});", collection, action))
+        }
+
+        StatementHint::ThreadCreate { name, function, arguments } => {
+            let thread_name = name.clone().unwrap_or_else(|| "thread".to_string());
+            if arguments.is_empty() {
+                Ok(format!("pthread_t {}; pthread_create(&{}, NULL, {}, NULL);", thread_name, thread_name, function))
+            } else {
+                Ok(format!("pthread_t {}; pthread_create(&{}, NULL, {}, {});", thread_name, thread_name, function, arguments.join(", ")))
+            }
+        }
+        StatementHint::ThreadJoin { thread } => Ok(format!("pthread_join({}, NULL);", thread)),
+        StatementHint::ThreadDetach { thread } => Ok(format!("pthread_detach({});", thread)),
+        StatementHint::ThreadSleep { duration, .. } => Ok(format!("sleep({});", duration)),
+        StatementHint::MutexCreate { name } => Ok(format!("pthread_mutex_t {}; pthread_mutex_init(&{}, NULL);", name, name)),
+        StatementHint::MutexLock { mutex } => Ok(format!("pthread_mutex_lock(&{});", mutex)),
+        StatementHint::MutexUnlock { mutex } => Ok(format!("pthread_mutex_unlock(&{});", mutex)),
+        StatementHint::MutexTryLock { mutex } => Ok(format!("pthread_mutex_trylock(&{});", mutex)),
+        StatementHint::SemaphoreCreate { name, initial } => Ok(format!("sem_t {}; sem_init(&{}, 0, {});", name, name, initial)),
+        StatementHint::SemaphoreWait { semaphore } => Ok(format!("sem_wait(&{});", semaphore)),
+        StatementHint::SemaphoreSignal { semaphore } => Ok(format!("sem_post(&{});", semaphore)),
+        StatementHint::ConditionCreate { name } => Ok(format!("pthread_cond_t {}; pthread_cond_init(&{}, NULL);", name, name)),
+        StatementHint::ConditionWait { condition, mutex } => Ok(format!("pthread_cond_wait(&{}, &{});", condition, mutex)),
+        StatementHint::ConditionSignal { condition } => Ok(format!("pthread_cond_signal(&{});", condition)),
+        StatementHint::ConditionBroadcast { condition } => Ok(format!("pthread_cond_broadcast(&{});", condition)),
+        StatementHint::AtomicCreate { name, initial } => Ok(format!("atomic_int {} = {};", name, initial)),
+        StatementHint::AtomicLoad { atomic, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = atomic_load(&{});", t, atomic))
+            } else {
+                Ok(format!("atomic_load(&{});", atomic))
+            }
+        }
+        StatementHint::AtomicStore { atomic, value } => Ok(format!("atomic_store(&{}, {});", atomic, value)),
+        StatementHint::AtomicCompareExchange { atomic, expected, desired } => Ok(format!("atomic_compare_exchange_strong(&{}, &{}, {});", atomic, expected, desired)),
+        StatementHint::AtomicIncrement { atomic } => Ok(format!("atomic_fetch_add(&{}, 1);", atomic)),
+        StatementHint::AtomicDecrement { atomic } => Ok(format!("atomic_fetch_sub(&{}, 1);", atomic)),
+
+        StatementHint::AsyncFunction { name, parameters, return_type } => {
+            let ret = return_type.as_deref().unwrap_or("void");
+            let params = if parameters.is_empty() {
+                "void".to_string()
+            } else {
+                parameters.iter().map(|(t, n)| format!("{} {}", t, n)).collect::<Vec<_>>().join(", ")
+            };
+            Ok(format!("/* async */ {} {}({});", ret, name, params))
+        }
+        StatementHint::AwaitExpression { expression, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = /* await */ {};", t, expression))
+            } else {
+                Ok(format!("/* await */ {};", expression))
+            }
+        }
+        StatementHint::PromiseCreate { name, executor } => Ok(format!("/* promise {} with {} */", name, executor)),
+        StatementHint::PromiseThen { promise, handler } => Ok(format!("/* {} then {} */", promise, handler)),
+        StatementHint::PromiseCatch { promise, handler } => Ok(format!("/* {} catch {} */", promise, handler)),
+        StatementHint::PromiseAll { promises, target } => Ok(format!("/* promise all {:?} into {} */", promises, target)),
+        StatementHint::PromiseRace { promises, target } => Ok(format!("/* promise race {:?} into {} */", promises, target)),
+
+        StatementHint::DocComment { text, .. } => Ok(format!("/** {} */", text)),
+        StatementHint::DocFunction { brief, .. } => Ok(format!("/** {} */", brief)),
+        StatementHint::DocClass { brief, .. } => Ok(format!("/** {} */", brief)),
+
         StatementHint::Unknown { original } => {
             Err(anyhow!("UNHANDLED: {}", original))
         }
@@ -2253,6 +2707,7 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
         StatementHint::Declaration {
             names,
             type_hint: _,
+            qualifiers: _,
             initial_value,
             is_array,
             array_size,
@@ -2421,6 +2876,13 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
                 Ok(format!("{} -= 1", target))
             }
         }
+        StatementHint::PrePostModify { target, delta, .. } => {
+            if *delta > 0 {
+                Ok(format!("{} += 1  # pre/post increment", target))
+            } else {
+                Ok(format!("{} -= 1  # pre/post decrement", target))
+            }
+        }
 
         StatementHint::FunctionDef {
             name,
@@ -2449,6 +2911,34 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
                 for (_, field_name) in fields {
                     lines.push(format!("        self.{} = None", field_name));
                 }
+            }
+            Ok(lines.join("\n"))
+        }
+        StatementHint::BitfieldDecl { name, type_hint, width } => {
+            let ty = type_hint.as_deref().unwrap_or("int");
+            Ok(format!("# bitfield {} : {} ({})", name, width, ty))
+        }
+        StatementHint::AnonymousStruct { parent, fields } => {
+            let mut lines = Vec::new();
+            if let Some(p) = parent {
+                lines.push(format!("# anonymous struct inside {}", p));
+            } else {
+                lines.push("# anonymous struct".to_string());
+            }
+            for (_, field_name) in fields {
+                lines.push(format!("# field {}", field_name));
+            }
+            Ok(lines.join("\n"))
+        }
+        StatementHint::AnonymousUnion { parent, fields } => {
+            let mut lines = Vec::new();
+            if let Some(p) = parent {
+                lines.push(format!("# anonymous union inside {}", p));
+            } else {
+                lines.push("# anonymous union".to_string());
+            }
+            for (_, field_name) in fields {
+                lines.push(format!("# field {}", field_name));
             }
             Ok(lines.join("\n"))
         }
@@ -2703,6 +3193,21 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
         StatementHint::ArrayInit { type_hint: _, name, values } => {
             Ok(format!("{} = [{}]", name, values.join(", ")))
         }
+        StatementHint::DesignatedInit { type_hint: _, name, designators } => {
+            let items: Vec<String> = designators
+                .iter()
+                .map(|(d, v)| format!("{}: {}", d.trim_matches(&['[', ']'][..]), v))
+                .collect();
+            Ok(format!("{} = {{ {} }}  # designated init", name, items.join(", ")))
+        }
+        StatementHint::CompoundLiteral { type_hint, values, fields, is_array } => {
+            if *is_array {
+                Ok(format!("[{}]  # compound literal {}", values.join(", "), type_hint))
+            } else {
+                let pairs: Vec<String> = fields.iter().map(|(k, v)| format!("\"{}\": {}", k, v)).collect();
+                Ok(format!("{{ {} }}  # compound literal {}", pairs.join(", "), type_hint))
+            }
+        }
         StatementHint::MultiDimAccess { array, indices, value } => {
             let idx = indices.join("][");
             if let Some(v) = value {
@@ -2828,6 +3333,16 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
         }
 
         StatementHint::Assert { expression } => Ok(format!("assert {}", expression)),
+        StatementHint::StaticAssert { condition, message } => {
+            if let Some(msg) = message {
+                Ok(format!("assert {}, \"{}\"  # static assert", condition, msg))
+            } else {
+                Ok(format!("assert {}  # static assert", condition))
+            }
+        }
+        StatementHint::CommaExpression { expressions } => {
+            Ok(format!("({})", expressions.join(", ")))
+        }
         StatementHint::Perror { message } => {
             if let Some(m) = message {
                 Ok(format!("import sys\nprint({}, file=sys.stderr)", m))
@@ -2836,6 +3351,315 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
             }
         }
         StatementHint::ErrnoCheck => Ok("# errno check (not applicable)".to_string()),
+
+        StatementHint::TryBlock => Ok("try:".to_string()),
+        StatementHint::ExceptBlock { exception_type, variable } => {
+            let ex = exception_type.clone().unwrap_or_else(|| "Exception".to_string());
+            if let Some(var) = variable {
+                Ok(format!("except {} as {}:", ex, var))
+            } else {
+                Ok(format!("except {}:", ex))
+            }
+        }
+        StatementHint::FinallyBlock => Ok("finally:".to_string()),
+        StatementHint::RaiseException { exception_type, message } => {
+            if let Some(msg) = message {
+                Ok(format!("raise {}(\"{}\")", exception_type, msg.trim_matches('\"')))
+            } else {
+                Ok(format!("raise {}", exception_type))
+            }
+        }
+        StatementHint::ErrorCheck { function_call, .. } => Ok(format!("# check error for {}", function_call)),
+        StatementHint::SetJmp { buffer } => Ok(format!("# setjmp {}", buffer)),
+        StatementHint::LongJmp { buffer, value } => Ok(format!("# longjmp {} {}", buffer, value)),
+
+        StatementHint::TestFunction { name, .. } => Ok(format!("def {}():\n    pass", name)),
+        StatementHint::TestAssert { expression, message } => {
+            if let Some(msg) = message {
+                Ok(format!("assert {}, \"{}\"", expression, msg))
+            } else {
+                Ok(format!("assert {}", expression))
+            }
+        }
+        StatementHint::TestAssertEqual { left, right, .. } => Ok(format!("assert {} == {}", left, right)),
+        StatementHint::TestAssertNotEqual { left, right } => Ok(format!("assert {} != {}", left, right)),
+        StatementHint::TestAssertTrue { expression } => Ok(format!("assert {}", expression)),
+        StatementHint::TestAssertFalse { expression } => Ok(format!("assert not ({})", expression)),
+        StatementHint::TestSetup { name } => Ok(format!("def {}():\n    pass", name)),
+        StatementHint::TestTeardown { name } => Ok(format!("def {}():\n    pass", name)),
+        StatementHint::MockFunction { name, return_value } => Ok(format!("def {}():\n    return {}", name, return_value)),
+
+        StatementHint::LabeledBreak { label } => Ok(format!("# break {}", label)),
+        StatementHint::LabeledContinue { label } => Ok(format!("# continue {}", label)),
+        StatementHint::LabeledLoop { label, loop_hint } => {
+            let loop_code = translate_hint_python(loop_hint)?;
+            Ok(format!("# label {}\n{}", label, loop_code))
+        }
+        StatementHint::MatchBlock { expression } => Ok(format!("match {}:", expression)),
+        StatementHint::MatchCase { pattern, guard, action } => {
+            if let Some(g) = guard {
+                if let Some(act) = action {
+                    Ok(format!("case {} if {}:\n    {}", pattern, g, act))
+                } else {
+                    Ok(format!("case {} if {}:\n    pass", pattern, g))
+                }
+            } else if let Some(act) = action {
+                Ok(format!("case {}:\n    {}", pattern, act))
+            } else {
+                Ok(format!("case {}:\n    pass", pattern))
+            }
+        }
+        StatementHint::MatchWildcard { action } => {
+            if let Some(act) = action {
+                Ok(format!("case _:\n    {}", act))
+            } else {
+                Ok("case _:\n    pass".to_string())
+            }
+        }
+        StatementHint::GuardClause { condition, action } => Ok(format!("if not ({}):\n    {}", condition, action)),
+        StatementHint::ConditionalChain { conditions, else_action } => {
+            let mut lines = Vec::new();
+            for (i, (cond, act)) in conditions.iter().enumerate() {
+                let keyword = if i == 0 { "if" } else { "elif" };
+                lines.push(format!("{} {}:\n    {}", keyword, cond, act));
+            }
+            if let Some(act) = else_action {
+                lines.push(format!("else:\n    {}", act));
+            }
+            Ok(lines.join("\n"))
+        }
+
+        StatementHint::LinkedListCreate { name, .. } => Ok(format!("{} = []", name)),
+        StatementHint::LinkedListInsert { list, value, position } => {
+            if let Some(pos) = position {
+                Ok(format!("{}.insert({}, {})", list, pos, value))
+            } else {
+                Ok(format!("{}.append({})", list, value))
+            }
+        }
+        StatementHint::LinkedListRemove { list, position } => Ok(format!("{}.pop({})", list, position)),
+        StatementHint::LinkedListTraverse { list, iterator } => Ok(format!("for {} in {}:\n    pass", iterator, list)),
+        StatementHint::StackCreate { name, .. } => Ok(format!("{} = []", name)),
+        StatementHint::StackPush { stack, value } => Ok(format!("{}.append({})", stack, value)),
+        StatementHint::StackPop { stack, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = {}.pop()", t, stack))
+            } else {
+                Ok(format!("{}.pop()", stack))
+            }
+        }
+        StatementHint::StackPeek { stack, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = {}[-1]", t, stack))
+            } else {
+                Ok(format!("{}[-1]", stack))
+            }
+        }
+        StatementHint::StackIsEmpty { stack } => Ok(format!("len({}) == 0", stack)),
+        StatementHint::QueueCreate { name, .. } => Ok(format!("{} = []", name)),
+        StatementHint::QueueEnqueue { queue, value } => Ok(format!("{}.append({})", queue, value)),
+        StatementHint::QueueDequeue { queue, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = {}.pop(0)", t, queue))
+            } else {
+                Ok(format!("{}.pop(0)", queue))
+            }
+        }
+        StatementHint::MapCreate { name, .. } => Ok(format!("{} = {{}}", name)),
+        StatementHint::MapPut { map, key, value } => Ok(format!("{}[{}] = {}", map, key, value)),
+        StatementHint::MapGet { map, key, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = {}.get({})", t, map, key))
+            } else {
+                Ok(format!("{}.get({})", map, key))
+            }
+        }
+        StatementHint::MapRemove { map, key } => Ok(format!("{}.pop({}, None)", map, key)),
+        StatementHint::MapContainsKey { map, key } => Ok(format!("{} in {}", key, map)),
+        StatementHint::MapKeys { map, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = list({}.keys())", t, map))
+            } else {
+                Ok(format!("list({}.keys())", map))
+            }
+        }
+        StatementHint::MapValues { map, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = list({}.values())", t, map))
+            } else {
+                Ok(format!("list({}.values())", map))
+            }
+        }
+        StatementHint::SetCreate { name, .. } => Ok(format!("{} = set()", name)),
+        StatementHint::SetAdd { set, value } => Ok(format!("{}.add({})", set, value)),
+        StatementHint::SetRemove { set, value } => Ok(format!("{}.discard({})", set, value)),
+        StatementHint::SetContains { set, value } => Ok(format!("{} in {}", value, set)),
+        StatementHint::SetUnion { set1, set2, target } => Ok(format!("{} = {} | {}", target, set1, set2)),
+        StatementHint::SetIntersection { set1, set2, target } => Ok(format!("{} = {} & {}", target, set1, set2)),
+        StatementHint::TreeNode { name, value, left, right } => {
+            let l = left.clone().unwrap_or_else(|| "None".to_string());
+            let r = right.clone().unwrap_or_else(|| "None".to_string());
+            Ok(format!("{} = ({}, {}, {})", name, value, l, r))
+        }
+        StatementHint::TreeInsert { tree, value } => Ok(format!("# insert {} into {}", value, tree)),
+        StatementHint::TreeSearch { tree, value } => Ok(format!("# search {} in {}", value, tree)),
+        StatementHint::TreeTraverse { tree, order } => Ok(format!("# traverse {} {}", tree, order)),
+
+        StatementHint::ClassDef { name, parent, interfaces, .. } => {
+            let mut bases = Vec::new();
+            if let Some(p) = parent {
+                bases.push(p.clone());
+            }
+            bases.extend(interfaces.clone());
+            let base_list = if bases.is_empty() { String::new() } else { format!("({})", bases.join(", ")) };
+            Ok(format!("class {}{}:\n    pass", name, base_list))
+        }
+        StatementHint::ClassField { name, initial_value, .. } => {
+            let value = initial_value.clone().unwrap_or_else(|| "None".to_string());
+            Ok(format!("{} = {}", name, value))
+        }
+        StatementHint::ClassMethod { name, parameters, is_static, .. } => {
+            let mut params: Vec<String> = Vec::new();
+            if !*is_static {
+                params.push("self".to_string());
+            }
+            params.extend(parameters.iter().map(|(_, n)| n.clone()));
+            let decorator = if *is_static { "@staticmethod\n" } else { "" };
+            Ok(format!("{}def {}({}):\n    pass", decorator, name, params.join(", ")))
+        }
+        StatementHint::Constructor { parameters, .. } => {
+            let mut params: Vec<String> = vec!["self".to_string()];
+            params.extend(parameters.iter().map(|(_, n)| n.clone()));
+            Ok(format!("def __init__({}):\n    pass", params.join(", ")))
+        }
+        StatementHint::Destructor { .. } => Ok("def __del__(self):\n    pass".to_string()),
+        StatementHint::InterfaceDef { name, .. } => Ok(format!("class {}:\n    pass", name)),
+        StatementHint::InterfaceMethod { name, parameters, .. } => {
+            let mut params: Vec<String> = vec!["self".to_string()];
+            params.extend(parameters.iter().map(|(_, n)| n.clone()));
+            Ok(format!("def {}({}):\n    raise NotImplementedError()", name, params.join(", ")))
+        }
+        StatementHint::ObjectCreate { class_name, variable, arguments } => {
+            if arguments.is_empty() {
+                Ok(format!("{} = {}()", variable, class_name))
+            } else {
+                Ok(format!("{} = {}({})", variable, class_name, arguments.join(", ")))
+            }
+        }
+        StatementHint::MethodCall { object, method, arguments } => {
+            if arguments.is_empty() {
+                Ok(format!("{}.{}()", object, method))
+            } else {
+                Ok(format!("{}.{}({})", object, method, arguments.join(", ")))
+            }
+        }
+        StatementHint::PropertyAccess { object, property } => Ok(format!("{}.{}", object, property)),
+        StatementHint::PropertyAssign { object, property, value } => Ok(format!("{}.{} = {}", object, property, value)),
+        StatementHint::SuperCall { method, arguments } => {
+            if let Some(m) = method {
+                if arguments.is_empty() {
+                    Ok(format!("super().{}()", m))
+                } else {
+                    Ok(format!("super().{}({})", m, arguments.join(", ")))
+                }
+            } else {
+                Ok("super()".to_string())
+            }
+        }
+        StatementHint::ThisReference => Ok("self".to_string()),
+
+        StatementHint::Lambda { parameters, body, .. } => Ok(format!("lambda {}: {}", parameters.join(", "), body)),
+        StatementHint::HigherOrderFunction { function, callback, collection } => {
+            if let Some(col) = collection {
+                Ok(format!("{}({}, {})", function, col, callback))
+            } else {
+                Ok(format!("{}({})", function, callback))
+            }
+        }
+        StatementHint::MapFunction { collection, transform, target } => {
+            let expr = format!("list(map({}, {}))", transform, collection);
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::FilterFunction { collection, predicate, target } => {
+            let expr = format!("list(filter({}, {}))", predicate, collection);
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::ReduceFunction { collection, reducer, initial, target } => {
+            let expr = if let Some(init) = initial {
+                format!("functools.reduce({}, {}, {})", reducer, collection, init)
+            } else {
+                format!("functools.reduce({}, {})", reducer, collection)
+            };
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, expr))
+            } else {
+                Ok(expr)
+            }
+        }
+        StatementHint::ForEachFunction { collection, action } => Ok(format!("for _ in {}:\n    {}", collection, action)),
+
+        StatementHint::ThreadCreate { function, arguments, .. } => {
+            if arguments.is_empty() {
+                Ok(format!("threading.Thread(target={}).start()", function))
+            } else {
+                Ok(format!("threading.Thread(target={}, args=({})).start()", function, arguments.join(", ")))
+            }
+        }
+        StatementHint::ThreadJoin { thread } => Ok(format!("{}.join()", thread)),
+        StatementHint::ThreadDetach { thread } => Ok(format!("# detach {}", thread)),
+        StatementHint::ThreadSleep { duration, .. } => Ok(format!("time.sleep({})", duration)),
+        StatementHint::MutexCreate { name } => Ok(format!("{} = threading.Lock()", name)),
+        StatementHint::MutexLock { mutex } => Ok(format!("{}.acquire()", mutex)),
+        StatementHint::MutexUnlock { mutex } => Ok(format!("{}.release()", mutex)),
+        StatementHint::MutexTryLock { mutex } => Ok(format!("{}.acquire(blocking=False)", mutex)),
+        StatementHint::SemaphoreCreate { name, initial } => Ok(format!("{} = threading.Semaphore({})", name, initial)),
+        StatementHint::SemaphoreWait { semaphore } => Ok(format!("{}.acquire()", semaphore)),
+        StatementHint::SemaphoreSignal { semaphore } => Ok(format!("{}.release()", semaphore)),
+        StatementHint::ConditionCreate { name } => Ok(format!("{} = threading.Condition()", name)),
+        StatementHint::ConditionWait { condition, .. } => Ok(format!("{}.wait()", condition)),
+        StatementHint::ConditionSignal { condition } => Ok(format!("{}.notify()", condition)),
+        StatementHint::ConditionBroadcast { condition } => Ok(format!("{}.notify_all()", condition)),
+        StatementHint::AtomicCreate { name, initial } => Ok(format!("{} = {}", name, initial)),
+        StatementHint::AtomicLoad { atomic, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = {}", t, atomic))
+            } else {
+                Ok(atomic.clone())
+            }
+        }
+        StatementHint::AtomicStore { atomic, value } => Ok(format!("{} = {}", atomic, value)),
+        StatementHint::AtomicCompareExchange { atomic, expected, desired } => Ok(format!("# compare_exchange {} {} {}", atomic, expected, desired)),
+        StatementHint::AtomicIncrement { atomic } => Ok(format!("{} += 1", atomic)),
+        StatementHint::AtomicDecrement { atomic } => Ok(format!("{} -= 1", atomic)),
+
+        StatementHint::AsyncFunction { name, parameters, .. } => {
+            let params = parameters.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
+            Ok(format!("async def {}({}):\n    pass", name, params))
+        }
+        StatementHint::AwaitExpression { expression, target } => {
+            if let Some(t) = target {
+                Ok(format!("{} = await {}", t, expression))
+            } else {
+                Ok(format!("await {}", expression))
+            }
+        }
+        StatementHint::PromiseCreate { name, executor } => Ok(format!("# promise {} with {}", name, executor)),
+        StatementHint::PromiseThen { promise, handler } => Ok(format!("# {} then {}", promise, handler)),
+        StatementHint::PromiseCatch { promise, handler } => Ok(format!("# {} catch {}", promise, handler)),
+        StatementHint::PromiseAll { promises, target } => Ok(format!("{} = [{}]", target, promises.join(", "))),
+        StatementHint::PromiseRace { promises, target } => Ok(format!("{} = [{}]", target, promises.join(", "))),
+
+        StatementHint::DocComment { text, .. } => Ok(format!("\"\"\"{}\"\"\"", text)),
+        StatementHint::DocFunction { brief, .. } => Ok(format!("\"\"\"{}\"\"\"", brief)),
+        StatementHint::DocClass { brief, .. } => Ok(format!("\"\"\"{}\"\"\"", brief)),
 
         StatementHint::Unknown { original } => {
             Err(anyhow!("UNHANDLED: {}", original))
@@ -2865,6 +3689,59 @@ pub fn translate_with_context(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hints::{StatementHint, Visibility};
+
+    #[test]
+    fn test_translate_try_block() {
+        let c = translate_from_hint(&StatementHint::TryBlock, "c").unwrap();
+        assert!(c.contains("try"));
+        let py = translate_from_hint(&StatementHint::TryBlock, "python").unwrap();
+        assert!(py.starts_with("try:"));
+    }
+
+    #[test]
+    fn test_translate_class_def_python() {
+        let hint = StatementHint::ClassDef {
+            name: "Foo".to_string(),
+            parent: None,
+            interfaces: Vec::new(),
+            is_abstract: false,
+        };
+        let py = translate_from_hint(&hint, "python").unwrap();
+        assert!(py.starts_with("class Foo"));
+    }
+
+    #[test]
+    fn test_translate_stack_push_c() {
+        let hint = StatementHint::StackPush { stack: "stack".to_string(), value: "x".to_string() };
+        let c = translate_from_hint(&hint, "c").unwrap();
+        assert!(c.contains("stack_push"));
+    }
+
+    #[test]
+    fn test_translate_await_python() {
+        let hint = StatementHint::AwaitExpression { expression: "fetch()".to_string(), target: None };
+        let py = translate_from_hint(&hint, "python").unwrap();
+        assert!(py.starts_with("await"));
+    }
+
+    #[test]
+    fn test_translate_class_field_c() {
+        let hint = StatementHint::ClassField {
+            name: "count".to_string(),
+            type_hint: Some("int".to_string()),
+            visibility: Visibility::Private,
+            is_static: false,
+            initial_value: None,
+        };
+        let c = translate_from_hint(&hint, "c").unwrap();
+        assert!(c.contains("int count"));
+    }
+}
+
 /// Generate C code with context-aware declarations.
 fn translate_with_context_c(
     hint: &StatementHint,
@@ -2873,7 +3750,7 @@ fn translate_with_context_c(
 ) -> Result<String> {
     match hint {
         // Declaration with smart redeclaration handling
-        StatementHint::Declaration { names, type_hint, initial_value, is_array, array_size } => {
+        StatementHint::Declaration { names, type_hint, qualifiers, initial_value, is_array, array_size } => {
             if names.is_empty() {
                 return Err(anyhow!("Declaration requires at least one variable name"));
             }
@@ -2891,12 +3768,18 @@ fn translate_with_context_c(
             }
 
             // Handle arrays (only declare new ones; skip redeclare)
+            let qualifier_prefix = if qualifiers.is_empty() {
+                String::new()
+            } else {
+                format!("{} ", qualifiers.join(" "))
+            };
+
             if *is_array {
                 if !new_vars.is_empty() {
                     let ty = type_hint.as_deref().unwrap_or("int");
                     let size = array_size.as_deref().unwrap_or("10");
                     for n in new_vars {
-                        lines.push(format!("{} {}[{}];", ty, n, size));
+                        lines.push(format!("{}{} {}[{}];", qualifier_prefix, ty, n, size));
                     }
                 }
                 // If all were existing arrays and no init, we skip emitting to avoid redeclare
@@ -2907,6 +3790,11 @@ fn translate_with_context_c(
             }
 
             // Non-array: declare new vars; assign existing when initial_value present
+            let alloc_check_vars: Vec<String> = new_vars
+                .iter()
+                .cloned()
+                .chain(existing_vars.iter().cloned())
+                .collect();
             if !new_vars.is_empty() {
                 let inferred = initial_value
                     .as_ref()
@@ -2915,15 +3803,20 @@ fn translate_with_context_c(
                 let ty = type_hint.as_deref().or(inferred).unwrap_or("int");
                 if let Some(val) = initial_value {
                     let decls: Vec<String> = new_vars.iter().map(|v| format!("{} = {}", v, val)).collect();
-                    lines.push(format!("{} {};", ty, decls.join(", ")));
+                    lines.push(format!("{}{} {};", qualifier_prefix, ty, decls.join(", ")));
                 } else {
-                    lines.push(format!("{} {};", ty, new_vars.join(", ")));
+                    lines.push(format!("{}{} {};", qualifier_prefix, ty, new_vars.join(", ")));
                 }
             }
 
             if let Some(val) = initial_value {
                 for n in existing_vars {
                     lines.push(format!("{} = {};", n, val));
+                }
+                if val.contains("malloc(") || val.contains("calloc(") || val.contains("realloc(") {
+                    for var in alloc_check_vars {
+                        lines.push(format!("if ({} == NULL) {{ perror(\"malloc failed\"); exit(1); }}", var));
+                    }
                 }
             }
 
@@ -2966,8 +3859,14 @@ fn translate_with_context_c(
             }
             
             // Generate simple assignments for existing variables
-            for var in existing_vars {
+            for var in existing_vars.iter() {
                 lines.push(format!("{} = {};", var, value));
+            }
+
+            if value.contains("malloc(") || value.contains("calloc(") || value.contains("realloc(") {
+                for var in new_vars.iter().chain(existing_vars.iter()) {
+                    lines.push(format!("if ({} == NULL) {{ perror(\"malloc failed\"); exit(1); }}", var));
+                }
             }
             
             if lines.is_empty() {
@@ -3039,7 +3938,7 @@ fn translate_with_context_c(
                 if validation.needs_declaration.contains(var) {
                     lines.push(format!("int {};", var));
                 }
-                lines.push(format!("scanf(\"%d\", &{});", var));
+                lines.push(format!("if (scanf(\"%d\", &{}) != 1) {{ fprintf(stderr, \"Invalid input\\n\"); return 1; }}", var));
             }
             Ok(lines.join("\n"))
         }
