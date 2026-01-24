@@ -7,6 +7,8 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 use crate::hints::{ArithmeticOp as HintArithmeticOp, StatementHint};
 use crate::models::TranslateLineRequest;
@@ -1494,6 +1496,56 @@ pub fn translate_from_hint(hint: &StatementHint, language: &str) -> Result<Strin
     }
 }
 
+fn normalize_array_index_c(array: &str, index: &str) -> String {
+    if index == "last" {
+        format!("(sizeof({0}) / sizeof({0}[0]) - 1)", array)
+    } else {
+        index.to_string()
+    }
+}
+
+fn normalize_array_index_python(array: &str, index: &str) -> String {
+    if index == "last" {
+        format!("len({}) - 1", array)
+    } else {
+        index.to_string()
+    }
+}
+
+static FLOAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\d+\.\d+").expect("valid float literal regex")
+});
+
+fn infer_c_type_from_expression(expr: &str) -> Option<&'static str> {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_lowercase();
+
+    if lower.starts_with('"') && lower.ends_with('"') {
+        return Some("char *");
+    }
+    if lower.starts_with('\'') && lower.ends_with('\'') {
+        return Some("char");
+    }
+    if FLOAT_LITERAL_RE.is_match(&lower) {
+        return Some("double");
+    }
+    for func in ["sqrt(", "pow(", "sin(", "cos(", "tan(", "exp(", "log("] {
+        if lower.contains(func) {
+            return Some("double");
+        }
+    }
+    if lower.contains("true") || lower.contains("false") {
+        return Some("int");
+    }
+    if ["==", "!=", ">=", "<=", "<", ">", "&&", "||"].iter().any(|op| lower.contains(op)) {
+        return Some("int");
+    }
+    None
+}
+
 /// Generate C code from a hint.
 fn translate_hint_c(hint: &StatementHint) -> Result<String> {
     match hint {
@@ -1508,7 +1560,11 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
                 return Err(anyhow!("Declaration requires at least one variable name"));
             }
             
-            let c_type = type_hint.as_deref().unwrap_or("int");
+            let inferred = initial_value
+                .as_ref()
+                .and_then(|v| infer_c_type_from_expression(v))
+                .map(|ty| ty as &str);
+            let c_type = type_hint.as_deref().or(inferred).unwrap_or("int");
             
             if *is_array {
                 let size = array_size.as_deref().unwrap_or("10");
@@ -2149,10 +2205,11 @@ fn translate_hint_c(hint: &StatementHint) -> Result<String> {
         }
 
         StatementHint::ArrayAccess { array, index, value } => {
+            let idx = normalize_array_index_c(array, index);
             if let Some(val) = value {
-                Ok(format!("{}[{}] = {};", array, index, val))
+                Ok(format!("{}[{}] = {};", array, idx, val))
             } else {
-                Ok(format!("{}[{}]", array, index))
+                Ok(format!("{}[{}]", array, idx))
             }
         }
 
@@ -2554,10 +2611,11 @@ fn translate_hint_python(hint: &StatementHint) -> Result<String> {
         }
 
         StatementHint::ArrayAccess { array, index, value } => {
+            let idx = normalize_array_index_python(array, index);
             if let Some(val) = value {
-                Ok(format!("{}[{}] = {}", array, index, val))
+                Ok(format!("{}[{}] = {}", array, idx, val))
             } else {
-                Ok(format!("{}[{}]", array, index))
+                Ok(format!("{}[{}]", array, idx))
             }
         }
 
@@ -2850,7 +2908,11 @@ fn translate_with_context_c(
 
             // Non-array: declare new vars; assign existing when initial_value present
             if !new_vars.is_empty() {
-                let ty = type_hint.as_deref().unwrap_or("int");
+                let inferred = initial_value
+                    .as_ref()
+                    .and_then(|v| infer_c_type_from_expression(v))
+                    .map(|ty| ty as &str);
+                let ty = type_hint.as_deref().or(inferred).unwrap_or("int");
                 if let Some(val) = initial_value {
                     let decls: Vec<String> = new_vars.iter().map(|v| format!("{} = {}", v, val)).collect();
                     lines.push(format!("{} {};", ty, decls.join(", ")));
@@ -2895,11 +2957,12 @@ fn translate_with_context_c(
             
             // Generate declarations for new variables
             if !new_vars.is_empty() {
+                let inferred = infer_c_type_from_expression(value).unwrap_or("int");
                 let decls: Vec<String> = new_vars
                     .iter()
                     .map(|v| format!("{} = {}", v, value))
                     .collect();
-                lines.push(format!("int {};", decls.join(", ")));
+                lines.push(format!("{} {};", inferred, decls.join(", ")));
             }
             
             // Generate simple assignments for existing variables

@@ -357,6 +357,7 @@ const SYNONYM_GROUPS: &[(&str, &[&str])] = &[
     ("and", &["also", "as well as", "along with", "both", "&&"]),
     ("or", &["either", "alternatively", "||"]),
     ("not", &["negation", "inverse", "opposite", "!"]),
+    ("xor", &["exclusive or", "bitwise xor"]),
     (
         "add",
         &[
@@ -415,6 +416,17 @@ const SYNONYM_GROUPS: &[(&str, &[&str])] = &[
     ("assign", &["set to", "store in", "put into"]),
 
     // Misc helpers
+    ("first", &["1st"]),
+    ("second", &["2nd"]),
+    ("third", &["3rd"]),
+    ("fourth", &["4th"]),
+    ("fifth", &["5th"]),
+    ("sixth", &["6th"]),
+    ("seventh", &["7th"]),
+    ("eighth", &["8th"]),
+    ("ninth", &["9th"]),
+    ("tenth", &["10th"]),
+    ("last", &["final"]),
     ("main", &["entry point", "program start"]),
     ("comment", &["note", "remark", "annotation"]),
 ];

@@ -1339,6 +1339,10 @@ pub fn extract(request: &TranslateLineRequest) -> StatementHint {
         return hint;
     }
 
+    if let Some(hint) = try_extract_flexible_assignment(line) {
+        return hint;
+    }
+
     if let Some(hint) = try_extract_equals_assignment(line) {
         return hint;
     }
@@ -1706,6 +1710,97 @@ fn try_extract_arithmetic(line: &str) -> Option<StatementHint> {
     None
 }
 
+fn try_extract_flexible_assignment(line: &str) -> Option<StatementHint> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_lowercase();
+
+    // Avoid clobbering control-flow and structural statements
+    for prefix in ["if ", "while ", "loop ", "for ", "switch ", "case ", "else "] {
+        if lower.starts_with(prefix) {
+            return None;
+        }
+    }
+
+    // "the variable x is <expr>" or "variable x is <expr>"
+    if let Some(rest) = strip_any_keyword(trimmed, &["the variable", "variable"]) {
+        if let Some((target_part, value_part)) = split_on_marker(rest, &[" is ", " equals ", " set ", " be "]) {
+            return build_declaration_hint(&target_part, &value_part);
+        }
+    }
+
+    // "<target> variable is <expr>"
+    if let Some(idx) = lower.find(" variable ") {
+        let target_part = &trimmed[..idx];
+        let after = trimmed[idx + " variable ".len()..].trim_start();
+        if let Some(value_part) = strip_any_keyword(after, &["is", "equals", "set", "be"]) {
+            if let Some(hint) = build_declaration_hint(target_part, value_part) {
+                return Some(hint);
+            }
+        }
+    }
+
+    // "store <expr> in <target>" / "put <expr> into <target>"
+    if let Some(rest) = strip_any_keyword(trimmed, &["store", "put", "save", "set"]) {
+        let rest_lower = rest.to_lowercase();
+        for marker in [" into ", " in ", " to "] {
+            if let Some(idx) = rest_lower.rfind(marker) {
+                let value_part = rest[..idx].trim();
+                let target_part = rest[idx + marker.len()..].trim();
+                if let Some(hint) = build_assignment_hint(target_part, value_part) {
+                    return Some(hint);
+                }
+            }
+        }
+    }
+
+    // "let x be <expr>" -> normalized to "set x be <expr>"
+    if let Some(rest) = strip_keyword(trimmed, "set") {
+        let rest_lower = rest.to_lowercase();
+        if let Some(idx) = rest_lower.find(" be ") {
+            let target_part = rest[..idx].trim();
+            let value_part = rest[idx + 4..].trim();
+            if let Some(hint) = build_declaration_hint(target_part, value_part) {
+                return Some(hint);
+            }
+        }
+    }
+
+    // "<expr> is <target>"
+    if let Some((left, right)) = split_on_marker(trimmed, &[" is ", " equals ", " set "]) {
+        if looks_like_expression(&left) && !looks_like_comparison(&left) {
+            if let Some(hint) = build_assignment_hint(&right, &left) {
+                return Some(hint);
+            }
+        }
+    }
+
+    // "<target> is <expr>"
+    if let Some((left, right)) = split_on_marker(trimmed, &[" is ", " equals ", " set "]) {
+        if !looks_like_comparison(&right) || looks_like_expression(&right) {
+            if let Some(hint) = build_assignment_hint(&left, &right) {
+                return Some(hint);
+            }
+        }
+    }
+
+    // "<target> <expr>" without explicit marker (e.g., "sum a plus b")
+    let mut tokens = trimmed.split_whitespace();
+    if let Some(first) = tokens.next() {
+        let target = sanitize_identifier(first);
+        let rest = tokens.collect::<Vec<&str>>().join(" ");
+        if !target.is_empty() && !rest.is_empty() && looks_like_expression(&rest) {
+            if let Some(hint) = build_assignment_hint(&target, &rest) {
+                return Some(hint);
+            }
+        }
+    }
+
+    None
+}
+
 fn parse_binary_op(text: &str, separators: &[&str]) -> Option<(String, String, Option<String>)> {
     let lower = text.to_lowercase();
     
@@ -1751,6 +1846,176 @@ fn extract_target(text: &str) -> (String, Option<String>) {
     (text.trim().to_string(), None)
 }
 
+static EXPR_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||[()+\-*/%<>]")
+        .expect("valid expression token regex")
+});
+
+fn normalize_expression_phrases(input: &str) -> String {
+    let mut out = input.to_string();
+    let replacements = [
+        (r"(?i)\bsquare root of\b", "sqrt of"),
+        (r"(?i)\bsquare root\b", "sqrt"),
+        (r"(?i)\bopen paren\b", "("),
+        (r"(?i)\bopen parenthesis\b", "("),
+        (r"(?i)\bclose paren\b", ")"),
+        (r"(?i)\bclose parenthesis\b", ")"),
+        (r"(?i)\bopen bracket\b", "("),
+        (r"(?i)\bclose bracket\b", ")"),
+    ];
+
+    for (pattern, replacement) in replacements {
+        let re = Regex::new(pattern).expect("valid expression phrase regex");
+        out = re.replace_all(&out, replacement).into_owned();
+    }
+
+    out
+}
+
+fn tokenize_expression(input: &str) -> Vec<String> {
+    EXPR_TOKEN_RE
+        .find_iter(input)
+        .map(|m| m.as_str().to_string())
+        .collect()
+}
+
+fn looks_like_expression(input: &str) -> bool {
+    let normalized = normalize_expression_phrases(input);
+    let tokens = tokenize_expression(&normalized);
+    tokens.iter().any(|token| {
+        let lower = token.to_lowercase();
+        matches!(
+            lower.as_str(),
+            "add" | "subtract" | "multiply" | "divide" | "modulo" | "mod" | "remainder"
+                | "plus" | "minus" | "times" | "over" | "and" | "or" | "not"
+                | "squared" | "cubed"
+        ) || matches!(
+            token.as_str(),
+            "+" | "-" | "*" | "/" | "%" | "&&" | "||" | "==" | "!=" | "<" | ">" | "<=" | ">="
+        ) || lower == "of"
+    })
+}
+
+fn parse_expression(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = normalize_expression_phrases(trimmed);
+    let lower = normalized.to_lowercase();
+    if let Some(idx) = lower.find(" to the power of ") {
+        let base_part = normalized[..idx].trim();
+        let exp_part = normalized[idx + " to the power of ".len()..].trim();
+        if !base_part.is_empty() && !exp_part.is_empty() {
+            let base = parse_expression(base_part).unwrap_or_else(|| base_part.to_string());
+            let exponent = parse_expression(exp_part).unwrap_or_else(|| exp_part.to_string());
+            return Some(format!("pow({}, {})", base, exponent));
+        }
+    }
+
+    let tokens = tokenize_expression(&normalized);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut output: Vec<String> = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
+
+    while let Some(token) = iter.next() {
+        let lower = token.to_lowercase();
+        match lower.as_str() {
+            "add" | "plus" => output.push("+".to_string()),
+            "subtract" | "minus" => output.push("-".to_string()),
+            "multiply" | "times" => output.push("*".to_string()),
+            "divide" | "over" => output.push("/".to_string()),
+            "modulo" | "mod" | "remainder" => output.push("%".to_string()),
+            "and" => output.push("&&".to_string()),
+            "or" => output.push("||".to_string()),
+            "not" => output.push("!".to_string()),
+            "squared" => {
+                let prev = output.pop()?;
+                output.push(format!("({} * {})", prev, prev));
+            }
+            "cubed" => {
+                let prev = output.pop()?;
+                output.push(format!("({} * {} * {})", prev, prev, prev));
+            }
+            "of" => {
+                let func = output.pop()?;
+                let arg = iter.next()?;
+                output.push(format!("{}({})", func, arg));
+            }
+            _ => output.push(token),
+        }
+    }
+
+    Some(output.join(" "))
+}
+
+fn normalize_assignment_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if looks_like_expression(trimmed) {
+        if let Some(expr) = parse_expression(trimmed) {
+            return expr;
+        }
+    }
+    trimmed.to_string()
+}
+
+fn looks_like_comparison(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        " greater ", " less ", " equal ", "==", "!=", "<=", ">=", " < ", " > ",
+    ]
+    .iter()
+    .any(|pat| lower.contains(pat))
+}
+
+fn split_on_marker(line: &str, markers: &[&str]) -> Option<(String, String)> {
+    let lower = line.to_lowercase();
+    for marker in markers {
+        if let Some(idx) = lower.find(marker) {
+            let left = line[..idx].trim().to_string();
+            let right = line[idx + marker.len()..].trim().to_string();
+            if !left.is_empty() && !right.is_empty() {
+                return Some((left, right));
+            }
+        }
+    }
+    None
+}
+
+fn build_assignment_hint(target_part: &str, value_part: &str) -> Option<StatementHint> {
+    let target = sanitize_identifier(target_part);
+    let value = normalize_assignment_value(value_part);
+    if target.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some(StatementHint::Assignment {
+        targets: vec![target],
+        value,
+    })
+}
+
+fn build_declaration_hint(target_part: &str, value_part: &str) -> Option<StatementHint> {
+    let target = sanitize_identifier(target_part);
+    let value = normalize_assignment_value(value_part);
+    if target.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some(StatementHint::Declaration {
+        names: vec![target],
+        type_hint: None,
+        initial_value: Some(value),
+        is_array: false,
+        array_size: None,
+    })
+}
+
 fn try_extract_assignment(line: &str) -> Option<StatementHint> {
     // Try "set" or "make" as assignment keywords
     let rest = strip_keyword(line, "set")
@@ -1775,7 +2040,7 @@ fn try_extract_assignment(line: &str) -> Option<StatementHint> {
     // Check for "to" separator
     if let Some(to_idx) = lower.find(" to ") {
         let targets_part = &rest[..to_idx];
-        let value = rest[to_idx + 4..].trim().to_string();
+        let value = normalize_assignment_value(&rest[to_idx + 4..]);
         
         let targets: Vec<String> = targets_part
             .split(',')
@@ -1821,7 +2086,7 @@ fn try_extract_assignment(line: &str) -> Option<StatementHint> {
     }
     
     // Everything after targets is the value
-    let value = tokens[target_end_idx..].join(" ");
+    let value = normalize_assignment_value(&tokens[target_end_idx..].join(" "));
     
     if !value.is_empty() {
         return Some(StatementHint::Assignment { targets, value });
@@ -1840,11 +2105,11 @@ fn try_extract_equals_assignment(line: &str) -> Option<StatementHint> {
         return None;
     }
     let target = sanitize_identifier(parts[0]);
-    let value = parts[1].trim();
+    let value = normalize_assignment_value(parts[1]);
     if target.is_empty() || value.is_empty() {
         return None;
     }
-    Some(StatementHint::Assignment { targets: vec![target], value: value.to_string() })
+    Some(StatementHint::Assignment { targets: vec![target], value })
 }
 
 fn is_valid_identifier_token(s: &str) -> bool {
@@ -1949,6 +2214,20 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
     let mut type_hint = None;
     let mut initial_value = None;
     let mut array_size = None;
+    let mut decl_text = text;
+    let mut value_part: Option<String> = None;
+
+    let lower_full = text.to_lowercase();
+    for marker in [" equals ", " = ", " is ", " set to ", " set "] {
+        if let Some(idx) = lower_full.find(marker) {
+            decl_text = text[..idx].trim();
+            let remainder = text[idx + marker.len()..].trim();
+            if !remainder.is_empty() {
+                value_part = Some(remainder.to_string());
+            }
+            break;
+        }
+    }
 
     // Noise words that are ONLY filtered when used as articles (before another word)
     // NOT filtered when they appear with commas or as standalone identifiers
@@ -1960,7 +2239,7 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
         "long", "short", "unsigned", "signed", "size_t", "long long", "unsigned long", "unsigned int",
     ];
     
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let tokens: Vec<&str> = decl_text.split_whitespace().collect();
     
     for (i, token) in tokens.iter().enumerate() {
         let clean = token.trim_matches(|c: char| c == ',' || c == ';');
@@ -1996,7 +2275,7 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
         if clean.parse::<f64>().is_ok() {
             if is_array && array_size.is_none() {
                 array_size = Some(clean.to_string());
-            } else {
+            } else if value_part.is_none() {
                 initial_value = Some(clean.to_string());
             }
             continue;
@@ -2009,6 +2288,13 @@ fn parse_declaration_parts(text: &str, is_array: bool) -> (Vec<String>, Option<S
         }
     }
 
+    if let Some(value) = value_part {
+        let normalized = normalize_assignment_value(&value);
+        if !normalized.is_empty() {
+            initial_value = Some(normalized);
+        }
+    }
+
     (names, type_hint, initial_value, array_size)
 }
 
@@ -2016,6 +2302,38 @@ fn try_extract_loop(line: &str) -> Option<StatementHint> {
     let rest = strip_any_keyword(line, LOOP_KEYWORDS)?;
     
     let lower = rest.to_lowercase();
+
+    // "loop until <condition>" / "repeat until <condition>"
+    if lower.starts_with("until ") {
+        let condition_part = rest[6..].trim();
+        if !condition_part.is_empty() {
+            let condition = normalize_condition(condition_part);
+            return Some(StatementHint::While {
+                condition: format!("!({})", condition),
+                body_action: None,
+            });
+        }
+    }
+
+    // "loop N times"
+    if let Some(idx) = lower.rfind(" times") {
+        let count_part = rest[..idx].trim();
+        if !count_part.is_empty() {
+            let count_expr = normalize_assignment_value(count_part);
+            let end_expr = if let Ok(num) = count_expr.parse::<i64>() {
+                (num.saturating_sub(1)).to_string()
+            } else {
+                format!("{} - 1", count_expr)
+            };
+            return Some(StatementHint::Loop {
+                iterator: Some("i".to_string()),
+                start: Some("0".to_string()),
+                end: Some(end_expr),
+                collection: None,
+                body_action: None,
+            });
+        }
+    }
     
     // Check for range loop (contains "to")
     if lower.contains(" to ") {
@@ -2161,6 +2479,16 @@ fn extract_loop_action(text: &str) -> Option<String> {
 }
 
 fn try_extract_conditional(line: &str) -> Option<StatementHint> {
+    if let Some(rest) = strip_keyword(line, "unless") {
+        let (condition, then_action, else_action) = parse_conditional_parts(rest);
+        return Some(StatementHint::Conditional {
+            condition: format!("!({})", condition),
+            then_action,
+            else_action,
+            is_else_if: false,
+        });
+    }
+
     let rest = strip_any_keyword(line, IF_KEYWORDS)?;
     
     let (condition, then_action, else_action) = parse_conditional_parts(rest);
@@ -2680,27 +3008,61 @@ fn try_extract_break_continue(line: &str) -> Option<StatementHint> {
 }
 
 fn try_extract_function_call(line: &str) -> Option<StatementHint> {
-    let rest = strip_keyword(line, "call")?;
-    
-    let lower = rest.to_lowercase();
-    let (name_part, args_part) = if let Some(idx) = lower.find(" with ") {
-        (&rest[..idx], Some(&rest[idx + 6..]))
-    } else {
-        (rest, None)
-    };
-    
-    let name = sanitize_identifier(name_part.trim());
-    if name.is_empty() {
-        return None;
+    if let Some(rest) = strip_any_keyword(line, &["call", "apply", "invoke"]) {
+        let lower = rest.to_lowercase();
+        let (name_part, args_part) = if let Some(idx) = lower.find(" with ") {
+            (&rest[..idx], Some(&rest[idx + 6..]))
+        } else if let Some(idx) = lower.find(" on ") {
+            (&rest[..idx], Some(&rest[idx + 4..]))
+        } else if let Some(idx) = lower.find(" to ") {
+            (&rest[..idx], Some(&rest[idx + 4..]))
+        } else {
+            (rest, None)
+        };
+        
+        let name = sanitize_identifier(name_part.trim());
+        if name.is_empty() {
+            return None;
+        }
+        
+        let arguments = if let Some(args) = args_part {
+            if args.contains(',') {
+                args.split(',').map(|s| s.trim().to_string()).collect()
+            } else {
+                args.split(" and ").map(|s| s.trim().to_string()).collect()
+            }
+        } else {
+            Vec::new()
+        };
+        
+        return Some(StatementHint::FunctionCall { name, arguments });
     }
-    
-    let arguments = if let Some(args) = args_part {
-        args.split(',').map(|s| s.trim().to_string()).collect()
-    } else {
-        Vec::new()
-    };
-    
-    Some(StatementHint::FunctionCall { name, arguments })
+
+    // "<func> of <arg>" pattern (e.g., "sqrt of x")
+    if let Some((name_part, arg_part)) = split_on_marker(line, &[" of "]) {
+        if name_part.split_whitespace().count() != 1 {
+            return None;
+        }
+        let lower_name = name_part.to_lowercase();
+        let reserved = [
+            "length", "size", "array", "element", "string", "struct", "union", "enum", "pointer",
+        ];
+        if reserved.iter().any(|w| *w == lower_name) {
+            return None;
+        }
+        let name = sanitize_identifier(name_part.trim());
+        if name.is_empty() {
+            return None;
+        }
+        let arguments = if arg_part.contains(',') {
+            arg_part.split(',').map(|s| s.trim().to_string()).collect()
+        } else {
+            vec![arg_part.trim().to_string()]
+        };
+        return Some(StatementHint::FunctionCall { name, arguments });
+    }
+
+    None
 }
 
 fn try_extract_include(line: &str) -> Option<StatementHint> {
@@ -2798,10 +3160,36 @@ fn try_extract_pointer(line: &str) -> Option<StatementHint> {
             return Some(StatementHint::Dereference { target });
         }
     }
+
+    // "value at p" or "what p points to"
+    if let Some(rest) = strip_keyword(line, "value at") {
+        let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::Dereference { target });
+        }
+    }
+    if lower.starts_with("what ") && lower.contains(" points to") {
+        let rest = line.trim()[5..].trim();
+        let name = rest.trim_end_matches(" points to").trim();
+        let target = sanitize_identifier(name);
+        if !target.is_empty() {
+            return Some(StatementHint::Dereference { target });
+        }
+    }
     
     // "address of x"
     if let Some(rest) = strip_keyword(line, "address of") {
         let target = sanitize_identifier(rest.trim());
+        if !target.is_empty() {
+            return Some(StatementHint::AddressOf { target });
+        }
+    }
+
+    // "where x is stored"
+    if lower.starts_with("where ") && lower.contains(" is stored") {
+        let rest = line.trim()[6..].trim();
+        let name = rest.trim_end_matches(" is stored").trim();
+        let target = sanitize_identifier(name);
         if !target.is_empty() {
             return Some(StatementHint::AddressOf { target });
         }
@@ -2823,6 +3211,31 @@ fn try_extract_memory_ops(line: &str) -> Option<StatementHint> {
     
     // "allocate n integers" or "allocate memory for x"
     if let Some(rest) = strip_keyword(line, "allocate") {
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" bytes") {
+            let count = rest[..idx].trim().to_string();
+            if !count.is_empty() {
+                return Some(StatementHint::Malloc { count, element_type: "char".to_string() });
+            }
+        }
+        if let Some(idx) = lower_rest.find(" space for ") {
+            let after = rest[idx + 11..].trim();
+            let tokens: Vec<&str> = after.split_whitespace().collect();
+            if tokens.len() >= 2 {
+                let count = tokens[0].to_string();
+                let element_type = tokens[1].trim_end_matches('s').to_string();
+                return Some(StatementHint::Malloc { count, element_type });
+            }
+        }
+        if let Some(idx) = lower_rest.find(" memory for ") {
+            let after = rest[idx + 12..].trim();
+            let tokens: Vec<&str> = after.split_whitespace().collect();
+            if tokens.len() >= 2 {
+                let count = tokens[0].to_string();
+                let element_type = tokens[1].trim_end_matches('s').to_string();
+                return Some(StatementHint::Malloc { count, element_type });
+            }
+        }
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         if tokens.len() >= 2 {
             let count = tokens[0].to_string();
@@ -3040,8 +3453,51 @@ fn try_extract_cast(line: &str) -> Option<StatementHint> {
     None
 }
 
+fn ordinal_to_index(word: &str) -> Option<String> {
+    match word.to_lowercase().as_str() {
+        "first" | "1st" => Some("0".to_string()),
+        "second" | "2nd" => Some("1".to_string()),
+        "third" | "3rd" => Some("2".to_string()),
+        "fourth" | "4th" => Some("3".to_string()),
+        "fifth" | "5th" => Some("4".to_string()),
+        "sixth" | "6th" => Some("5".to_string()),
+        "seventh" | "7th" => Some("6".to_string()),
+        "eighth" | "8th" => Some("7".to_string()),
+        "ninth" | "9th" => Some("8".to_string()),
+        "tenth" | "10th" => Some("9".to_string()),
+        "last" | "final" | "end" => Some("last".to_string()),
+        _ => None,
+    }
+}
+
 fn try_extract_array_access(line: &str) -> Option<StatementHint> {
     let lower = line.trim().to_lowercase();
+
+    // "<ordinal> element of <array>" (e.g., "third element of numbers")
+    if let Some(idx) = lower.find(" element of ") {
+        let ordinal_part = line.trim()[..idx].trim();
+        let array_part = line.trim()[idx + " element of ".len()..].trim();
+        let index = ordinal_to_index(ordinal_part).unwrap_or_else(|| ordinal_part.to_string());
+        let array = sanitize_identifier(array_part);
+        if !array.is_empty() && !index.is_empty() {
+            return Some(StatementHint::ArrayAccess { array, index, value: None });
+        }
+    }
+
+    // "element <i> of <array>"
+    if lower.starts_with("element ") && lower.contains(" of ") {
+        let rest = &line.trim()[8..];
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" of ") {
+            let index_part = rest[..idx].trim();
+            let array_part = rest[idx + 4..].trim();
+            let index = ordinal_to_index(index_part).unwrap_or_else(|| index_part.to_string());
+            let array = sanitize_identifier(array_part);
+            if !array.is_empty() && !index.is_empty() {
+                return Some(StatementHint::ArrayAccess { array, index, value: None });
+            }
+        }
+    }
     
     // "get a at i"
     if let Some(rest) = strip_keyword(line, "get") {
@@ -3055,6 +3511,30 @@ fn try_extract_array_access(line: &str) -> Option<StatementHint> {
         }
     }
     
+    // "array at i"
+    if lower.contains(" at ") && !lower.starts_with("set ") {
+        if let Some(idx) = lower.find(" at ") {
+            let array = sanitize_identifier(&line.trim()[..idx]);
+            let index_part = line.trim()[idx + 4..].trim();
+            let index = ordinal_to_index(index_part).unwrap_or_else(|| index_part.to_string());
+            if !array.is_empty() && !index.is_empty() {
+                return Some(StatementHint::ArrayAccess { array, index, value: None });
+            }
+        }
+    }
+
+    // "array sub i"
+    if lower.contains(" sub ") {
+        if let Some(idx) = lower.find(" sub ") {
+            let array = sanitize_identifier(&line.trim()[..idx]);
+            let index_part = line.trim()[idx + 5..].trim();
+            let index = ordinal_to_index(index_part).unwrap_or_else(|| index_part.to_string());
+            if !array.is_empty() && !index.is_empty() {
+                return Some(StatementHint::ArrayAccess { array, index, value: None });
+            }
+        }
+    }
+
     // "set a at 0 to 5"
     if lower.starts_with("set ") && lower.contains(" at ") && lower.contains(" to ") {
         let rest = &line.trim()[4..];
@@ -3806,6 +4286,17 @@ fn try_extract_string_funcs(line: &str) -> Option<StatementHint> {
             return Some(StatementHint::Strcpy { dest: sanitize_identifier(tokens[1]), src: sanitize_identifier(tokens[0]) });
         }
     }
+    if lower.starts_with("copy ") && lower.contains(" to ") && !lower.contains(" chars from") {
+        let rest = strip_keyword(line, "copy")?.trim();
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" to ") {
+            let src = sanitize_identifier(rest[..idx].trim());
+            let dest = sanitize_identifier(rest[idx + 4..].trim());
+            if !src.is_empty() && !dest.is_empty() {
+                return Some(StatementHint::Strcpy { dest, src });
+            }
+        }
+    }
     if lower.starts_with("copy") && lower.contains(" chars from") {
         let rest = line[4..].trim();
         let tokens: Vec<&str> = rest.split_whitespace().collect();
@@ -3824,6 +4315,17 @@ fn try_extract_string_funcs(line: &str) -> Option<StatementHint> {
             return Some(StatementHint::Strcat { dest: sanitize_identifier(tokens[1]), src: sanitize_identifier(tokens[0]) });
         }
     }
+    if lower.starts_with("append ") {
+        let rest = strip_keyword(line, "append")?.trim();
+        let lower_rest = rest.to_lowercase();
+        if let Some(idx) = lower_rest.find(" to ") {
+            let src = sanitize_identifier(rest[..idx].trim());
+            let dest = sanitize_identifier(rest[idx + 4..].trim());
+            if !src.is_empty() && !dest.is_empty() {
+                return Some(StatementHint::Strcat { dest, src });
+            }
+        }
+    }
     if lower.starts_with("compare strings") || lower.starts_with("strcmp") {
         let rest = strip_any_keyword(line, &["compare strings", "strcmp"])?;
         let tokens: Vec<&str> = rest.split_whitespace().collect();
@@ -3835,8 +4337,26 @@ fn try_extract_string_funcs(line: &str) -> Option<StatementHint> {
             });
         }
     }
+    if lower.starts_with("compare ") && lower.contains(" and ") {
+        let rest = strip_keyword(line, "compare")?.trim();
+        let parts: Vec<&str> = rest.split(" and ").collect();
+        if parts.len() >= 2 {
+            let left = sanitize_identifier(parts[0].trim());
+            let right = sanitize_identifier(parts[1].trim());
+            if !left.is_empty() && !right.is_empty() {
+                return Some(StatementHint::Strcmp { left, right, target: None });
+            }
+        }
+    }
     if lower.starts_with("length of string") || lower.starts_with("strlen") {
         let rest = strip_any_keyword(line, &["length of string", "strlen"])?;
+        let target = sanitize_identifier(rest);
+        if !target.is_empty() {
+            return Some(StatementHint::Strlen { target, store_in: None });
+        }
+    }
+    if lower.starts_with("length of ") {
+        let rest = strip_keyword(line, "length of")?.trim();
         let target = sanitize_identifier(rest);
         if !target.is_empty() {
             return Some(StatementHint::Strlen { target, store_in: None });
@@ -3900,7 +4420,13 @@ fn try_extract_stdlib_funcs(line: &str) -> Option<StatementHint> {
         ("log", MathFuncKind::Log),
     ] {
         if lower.starts_with(kw) {
-            let args: Vec<String> = line[kw.len()..].split_whitespace().map(|s| s.to_string()).collect();
+            let mut args: Vec<String> = line[kw.len()..]
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            if args.first().map(|s| s.eq_ignore_ascii_case("of")).unwrap_or(false) {
+                args.remove(0);
+            }
             return Some(StatementHint::MathFunc { func: kind, args, store_in: None });
         }
     }
@@ -4438,7 +4964,79 @@ mod tests {
     #[test]
     fn test_assignment() {
         let hint = extract(&make_request("set x to 5"));
-        assert!(matches!(hint, StatementHint::Assignment { target, value } if target == "x" && value == "5"));
+        assert!(matches!(hint, StatementHint::Assignment { targets, value } if targets == vec!["x"] && value == "5"));
+    }
+
+    #[test]
+    fn test_flexible_assignment_patterns() {
+        let hint = extract(&make_request("sum a plus b"));
+        assert!(matches!(hint, StatementHint::Assignment { targets, value } if targets == vec!["sum"] && value == "a + b"));
+
+        let hint = extract(&make_request("a plus b is sum"));
+        assert!(matches!(hint, StatementHint::Assignment { targets, value } if targets == vec!["sum"] && value == "a + b"));
+
+        let hint = extract(&make_request("the variable sum is a plus b"));
+        assert!(matches!(hint, StatementHint::Declaration { names, initial_value: Some(val), .. } if names == vec!["sum"] && val == "a + b"));
+
+        let hint = extract(&make_request("sum variable is a plus b"));
+        assert!(matches!(hint, StatementHint::Declaration { names, initial_value: Some(val), .. } if names == vec!["sum"] && val == "a + b"));
+
+        let hint = extract(&make_request("let sum be a plus b"));
+        assert!(matches!(hint, StatementHint::Declaration { names, initial_value: Some(val), .. } if names == vec!["sum"] && val == "a + b"));
+
+        let hint = extract(&make_request("store a plus b in sum"));
+        assert!(matches!(hint, StatementHint::Assignment { targets, value } if targets == vec!["sum"] && value == "a + b"));
+    }
+
+    #[test]
+    fn test_expression_chaining() {
+        let hint = extract(&make_request("set total to a plus b plus c"));
+        assert!(matches!(hint, StatementHint::Assignment { targets, value } if targets == vec!["total"] && value == "a + b + c"));
+    }
+
+    #[test]
+    fn test_loop_times_and_until() {
+        let hint = extract(&make_request("loop 3 times"));
+        assert!(matches!(hint, StatementHint::Loop { start: Some(s), end: Some(e), .. } if s == "0" && e == "2"));
+
+        let hint = extract(&make_request("repeat until x equals 10"));
+        assert!(matches!(hint, StatementHint::While { condition, .. } if condition == "!(x == 10)"));
+    }
+
+    #[test]
+    fn test_array_access_patterns() {
+        let hint = extract(&make_request("third element of numbers"));
+        assert!(matches!(hint, StatementHint::ArrayAccess { array, index, value: None } if array == "numbers" && index == "2"));
+
+        let hint = extract(&make_request("last element of values"));
+        assert!(matches!(hint, StatementHint::ArrayAccess { array, index, value: None } if array == "values" && index == "last"));
+
+        let hint = extract(&make_request("numbers at i"));
+        assert!(matches!(hint, StatementHint::ArrayAccess { array, index, value: None } if array == "numbers" && index == "i"));
+    }
+
+    #[test]
+    fn test_function_call_patterns() {
+        let hint = extract(&make_request("call sqrt on x"));
+        assert!(matches!(hint, StatementHint::FunctionCall { name, arguments } if name == "sqrt" && arguments == vec!["x"]));
+
+        let hint = extract(&make_request("apply abs to n"));
+        assert!(matches!(hint, StatementHint::FunctionCall { name, arguments } if name == "abs" && arguments == vec!["n"]));
+    }
+
+    #[test]
+    fn test_string_and_memory_patterns() {
+        let hint = extract(&make_request("append src to dest"));
+        assert!(matches!(hint, StatementHint::Strcat { dest, src } if dest == "dest" && src == "src"));
+
+        let hint = extract(&make_request("length of name"));
+        assert!(matches!(hint, StatementHint::Strlen { target, .. } if target == "name"));
+
+        let hint = extract(&make_request("copy source to dest"));
+        assert!(matches!(hint, StatementHint::Strcpy { dest, src } if dest == "dest" && src == "source"));
+
+        let hint = extract(&make_request("allocate 100 bytes"));
+        assert!(matches!(hint, StatementHint::Malloc { count, element_type } if count == "100" && element_type == "char"));
     }
 
     #[test]
