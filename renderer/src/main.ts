@@ -617,10 +617,10 @@ const loadWorkspaceTree = async (override?: { rootPath: string; rootName?: strin
       '<p class="tree-placeholder">File system bridge unavailable in this build.</p>';
     return;
   }
-  fileTreeContainer.innerHTML = '<p class="tree-placeholder">Loading workspace…</p>';
   try {
     const payload = await window.electronAPI.listDirectory();
-    if (!payload) {
+    if (!payload || !payload.rootPath) {
+      fileTreeContainer.innerHTML = '<p class="tree-placeholder">No folder open. Use File → Open Folder.</p>';
       return;
     }
     applyWorkspaceSnapshot({

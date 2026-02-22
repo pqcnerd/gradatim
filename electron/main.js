@@ -10,7 +10,7 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const devServerURL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
 const RUST_CORE_ADDR = process.env.RUST_CORE_ADDR || '127.0.0.1:4888';
 const rustEndpoint = `http://${RUST_CORE_ADDR}`;
-let workspaceRoot = process.cwd();
+let workspaceRoot = null;
 let configStore;
 let currentSettings = { ...DEFAULT_SETTINGS };
 let rustCoreProcess = null;
@@ -218,11 +218,14 @@ app.whenReady().then(() => {
     return currentSettings;
   });
 
-  ipcMain.handle('fs:list', async () => ({
-    rootPath: workspaceRoot,
-    rootName: path.basename(workspaceRoot),
-    snapshot: buildDirectorySnapshot(workspaceRoot)
-  }));
+  ipcMain.handle('fs:list', async () => {
+    if (!workspaceRoot) return { rootPath: null, rootName: null, snapshot: null };
+    return {
+      rootPath: workspaceRoot,
+      rootName: path.basename(workspaceRoot),
+      snapshot: buildDirectorySnapshot(workspaceRoot)
+    };
+  });
 
   ipcMain.handle('fs:read-file', async (_event, relativePath) => {
     const target = resolveWorkspacePath(relativePath);
@@ -266,7 +269,7 @@ app.whenReady().then(() => {
   ipcMain.handle('fs:save-as', async (_event, payload = {}) => {
     const result = await dialog.showSaveDialog({
       title: 'Save As',
-      defaultPath: payload.defaultPath || path.join(workspaceRoot, payload.suggestedName || 'untitled.c')
+      defaultPath: payload.defaultPath || (workspaceRoot ? path.join(workspaceRoot, payload.suggestedName || 'untitled.c') : payload.suggestedName || 'untitled.c')
     });
     if (result.canceled || !result.filePath) {
       return { canceled: true };
@@ -382,7 +385,7 @@ const MAX_DEPTH = 4;
 function buildDirectorySnapshot(dirPath, depth = 0) {
   const node = {
     type: 'folder',
-    name: path.basename(dirPath) || path.basename(workspaceRoot),
+    name: path.basename(dirPath) || (workspaceRoot ? path.basename(workspaceRoot) : ''),
     path: normalizeRelative(dirPath),
     children: []
   };
@@ -415,6 +418,7 @@ function buildDirectorySnapshot(dirPath, depth = 0) {
 }
 
 function resolveWorkspacePath(relativePath = '.') {
+  if (!workspaceRoot) throw new Error('No workspace is open');
   const normalized = path.normalize(relativePath);
   const targetPath = path.resolve(workspaceRoot, normalized);
   if (!targetPath.startsWith(workspaceRoot)) {
@@ -424,7 +428,7 @@ function resolveWorkspacePath(relativePath = '.') {
 }
 
 function normalizeRelative(targetPath) {
-  if (!targetPath) {
+  if (!targetPath || !workspaceRoot) {
     return null;
   }
   const relative = path.relative(workspaceRoot, targetPath);
