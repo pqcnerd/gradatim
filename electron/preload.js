@@ -18,6 +18,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu-command', listener);
     return () => ipcRenderer.removeListener('menu-command', listener);
   },
+  window: {
+    minimize: () => ipcRenderer.send('window:minimize'),
+    maximize: () => ipcRenderer.send('window:maximize'),
+    close: () => ipcRenderer.send('window:close')
+  },
 
   // Terminal API
   terminal: {

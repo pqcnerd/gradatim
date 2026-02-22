@@ -9,8 +9,62 @@
     <div id="app">
       <div class="bg-canvas" aria-hidden="true"></div>
       <header class="top-bar">
-        <span id="workspace-label" class="workspace-label">Gradatim Workspace</span>
-        <div class="app-controls">
+        <div class="titlebar-left">
+          <img src="/logo.png" alt="Gradatim" class="titlebar-logo no-drag" />
+          <div class="menu-bar no-drag" id="menu-bar">
+            <div class="menu-group" data-menu="file">
+              <button type="button" id="menu-file-btn" class="menu-item" aria-haspopup="true" aria-expanded="false">File</button>
+              <div class="menu-dropdown" id="menu-file-dropdown" role="menu" aria-hidden="true">
+                <button type="button" class="menu-command" data-command="file:new">New File</button>
+                <button type="button" class="menu-command" data-command="file:open">Open File…</button>
+                <button type="button" class="menu-command" data-command="file:openFolder">Open Folder…</button>
+                <button type="button" class="menu-command" data-command="file:save">Save</button>
+                <button type="button" class="menu-command" data-command="file:saveAs">Save As…</button>
+                <button type="button" class="menu-command" data-command="file:closeTab">Close Tab</button>
+                <button type="button" class="menu-command" data-command="file:closeOthers">Close Others</button>
+                <button type="button" class="menu-command" data-command="file:closeAll">Close All</button>
+              </div>
+            </div>
+            <div class="menu-group" data-menu="edit">
+              <button type="button" id="menu-edit-btn" class="menu-item" aria-haspopup="true" aria-expanded="false">Edit</button>
+              <div class="menu-dropdown" id="menu-edit-dropdown" role="menu" aria-hidden="true">
+                <button type="button" class="menu-command" data-command="edit:undo">Undo</button>
+                <button type="button" class="menu-command" data-command="edit:redo">Redo</button>
+                <button type="button" class="menu-command" data-command="edit:cut">Cut</button>
+                <button type="button" class="menu-command" data-command="edit:copy">Copy</button>
+                <button type="button" class="menu-command" data-command="edit:paste">Paste</button>
+                <button type="button" class="menu-command" data-command="edit:selectAll">Select All</button>
+                <button type="button" class="menu-command" data-command="edit:find">Find</button>
+                <button type="button" class="menu-command" data-command="edit:replace">Replace</button>
+                <button type="button" class="menu-command" data-command="edit:goToLine">Go to Line…</button>
+              </div>
+            </div>
+            <div class="menu-group" data-menu="view">
+              <button type="button" id="menu-view-btn" class="menu-item" aria-haspopup="true" aria-expanded="false">View</button>
+              <div class="menu-dropdown" id="menu-view-dropdown" role="menu" aria-hidden="true">
+                <button type="button" class="menu-command" data-command="view:toggleSidebar">Toggle Sidebar</button>
+                <button type="button" class="menu-command" data-command="view:toggleActivity">Toggle Activity Panel</button>
+                <button type="button" class="menu-command" data-command="view:toggleTerminal">Toggle Terminal</button>
+                <button type="button" class="menu-command" data-command="view:toggleWordWrap">Toggle Word Wrap</button>
+                <button type="button" class="menu-command" data-command="view:toggleLineNumbers">Toggle Line Numbers</button>
+                <button type="button" class="menu-command" data-command="view:zoomIn">Zoom In</button>
+                <button type="button" class="menu-command" data-command="view:zoomOut">Zoom Out</button>
+                <button type="button" class="menu-command" data-command="view:zoomReset">Reset Zoom</button>
+                <button type="button" class="menu-command" data-command="view:toggleMinimap">Toggle Minimap</button>
+              </div>
+            </div>
+            <div class="menu-group" data-menu="terminal">
+              <button type="button" id="menu-terminal-btn" class="menu-item" aria-haspopup="true" aria-expanded="false">Terminal</button>
+              <div class="menu-dropdown" id="menu-terminal-dropdown" role="menu" aria-hidden="true">
+                <button type="button" class="menu-command" data-command="terminal:new">New Terminal</button>
+                <button type="button" class="menu-command" data-command="terminal:runFile">Run Current File</button>
+                <button type="button" class="menu-command" data-command="terminal:buildFile">Build Current File</button>
+                <button type="button" class="menu-command" data-command="terminal:close">Close Terminal</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="app-controls no-drag">
           <div class="control control-language">
             <span class="control-label">Target</span>
             <div class="language-dropdown" id="language-dropdown">
@@ -42,6 +96,11 @@
           <button type="button" id="theme-cycle" class="icon-btn" title="Change theme">Theme</button>
           <button type="button" id="open-settings" class="icon-btn" title="Settings">&#9881;</button>
         </div>
+        <div class="window-controls no-drag">
+          <button type="button" id="window-minimize" class="window-control" title="Minimize">—</button>
+          <button type="button" id="window-maximize" class="window-control" title="Maximize">▢</button>
+          <button type="button" id="window-close" class="window-control window-control-close" title="Close">✕</button>
+        </div>
       </header>
       <div class="workspace">
         <main class="editor-area">
@@ -67,6 +126,9 @@
               <h2>Files</h2>
               <button type="button" class="sidebar-action" id="sidebar-refresh" title="Refresh">&#8635;</button>
             </div>
+            <div class="workspace-meta">
+              <span id="workspace-label" class="workspace-label">Gradatim Workspace</span>
+            </div>
             <div id="file-tree" class="file-tree">
               <p class="tree-placeholder">File tree coming soon...</p>
             </div>
@@ -81,48 +143,122 @@
           <h2>Settings</h2>
         </header>
         <form id="settings-form">
-          <label>
-            Rust core URL
-            <input type="text" name="rustCoreUrl" />
-          </label>
-          <label class="checkbox">
-            <input type="checkbox" name="autoTranslate" />
-            Enable auto-translate by default
-          </label>
-          <label>
-            Context window (characters before line)
-            <input type="number" name="beforeChars" min="200" max="5000" step="50" />
-          </label>
-          <label>
-            Context window (characters after line)
-            <input type="number" name="afterChars" min="100" max="3000" step="50" />
-          </label>
-          <label>
-            Target language
-            <select name="targetLanguage">
-              <option value="c">C</option>
-              <option value="python">Python</option>
-            </select>
-          </label>
-          <label>
-            Max lines per translation
-            <select name="maxLines">
-              <option value="1">1 line</option>
-              <option value="2">2 lines</option>
-              <option value="3">3 lines</option>
-            </select>
-          </label>
-          <label>
-            Gemini model name
-            <input type="text" name="aiModel" />
-          </label>
-          <label>
-            Gemini API key
-            <input type="password" name="aiApiKey" autocomplete="off" />
-          </label>
+          <fieldset>
+            <legend>Translation</legend>
+            <label class="checkbox">
+              <input type="checkbox" name="autoTranslate" />
+              Enable auto-translate by default
+            </label>
+            <label>
+              Context window (characters before line)
+              <input type="number" name="beforeChars" min="200" max="5000" step="50" />
+            </label>
+            <label>
+              Context window (characters after line)
+              <input type="number" name="afterChars" min="100" max="3000" step="50" />
+            </label>
+            <label>
+              Target language
+              <select name="targetLanguage">
+                <option value="c">C</option>
+                <option value="python">Python</option>
+              </select>
+            </label>
+            <label>
+              Max lines per translation
+              <select name="maxLines">
+                <option value="1">1 line</option>
+                <option value="2">2 lines</option>
+                <option value="3">3 lines</option>
+              </select>
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>Editor</legend>
+            <label>
+              Tab size
+              <select name="editorTabSize">
+                <option value="2">2 spaces</option>
+                <option value="4">4 spaces</option>
+                <option value="8">8 spaces</option>
+              </select>
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="editorInsertSpaces" />
+              Insert spaces instead of tabs
+            </label>
+            <label>
+              Font size
+              <input type="number" name="editorFontSize" min="10" max="32" step="1" />
+            </label>
+            <label>
+              Font family
+              <input type="text" name="editorFontFamily" />
+            </label>
+            <label>
+              Render whitespace
+              <select name="editorRenderWhitespace">
+                <option value="none">None</option>
+                <option value="trailing">Trailing</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+            <label>
+              Cursor style
+              <select name="editorCursorStyle">
+                <option value="line">Line</option>
+                <option value="block">Block</option>
+                <option value="underline">Underline</option>
+              </select>
+            </label>
+          </fieldset>
+          <fieldset>
+            <legend>AI</legend>
+            <label>
+              AI provider
+              <select name="aiProvider" id="ai-provider">
+                <option value="gemini">Google Gemini (recommended)</option>
+                <option value="openai">OpenAI (GPT)</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="other">Other (OpenAI-compatible)</option>
+              </select>
+            </label>
+            <label>
+              Model name
+              <input type="text" name="aiModel" id="ai-model" />
+            </label>
+            <label>
+              API key
+              <input type="password" name="aiApiKey" autocomplete="off" />
+            </label>
+            <div class="api-key-links">
+              <a
+                class="api-key-link"
+                id="ai-key-link"
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noreferrer noopener"
+                >Get a Gemini API key</a
+              >
+              <a
+                class="api-key-link"
+                href="https://platform.openai.com/api-keys"
+                target="_blank"
+                rel="noreferrer noopener"
+                >OpenAI API keys</a
+              >
+              <a
+                class="api-key-link"
+                href="https://platform.deepseek.com/api_keys"
+                target="_blank"
+                rel="noreferrer noopener"
+                >DeepSeek API keys</a
+              >
+            </div>
+          </fieldset>
           <footer class="modal-actions">
-            <button type="button" id="close-settings">Cancel</button>
-            <button type="submit">Save</button>
+            <button type="button" id="close-settings" class="modal-btn-cancel">Cancel</button>
+            <button type="submit" class="modal-btn-save">Save</button>
           </footer>
         </form>
       </div>

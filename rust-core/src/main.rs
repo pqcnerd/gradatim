@@ -32,14 +32,15 @@ use axum::{
 use hints::{StatementHint, VariableContext, validate_reads};
 use models::{TranslateLineRequest, TranslateLineResponse};
 use prompt::PromptContext;
-use providers::{AiRequestOptions, GeminiProvider, Provider};
+use providers::{AiRequestOptions, GeminiProvider, OpenAIProvider, Provider};
 use translate::{translate_from_hint, translate_with_context};
 use tracing::{debug, error, info, warn};
 
 /// Application state shared across request handlers.
 #[derive(Clone)]
 struct AppState {
-    provider: Provider,
+    gemini_provider: Provider,
+    openai_provider: Provider,
 }
 
 #[tokio::main]
@@ -52,9 +53,12 @@ async fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
-    let provider = build_provider_from_env();
+    let (gemini_provider, openai_provider) = build_providers_from_env();
 
-    let state = AppState { provider };
+    let state = AppState {
+        gemini_provider,
+        openai_provider,
+    };
 
     let app = Router::new()
         .route("/translate-line", post(handle_translate_line))
@@ -217,19 +221,19 @@ fn respond_with_hint_based(
     }
 }
 
-/// Build the AI provider from environment variables.
-fn build_provider_from_env() -> Provider {
-    let api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string());
+/// Build all supported AI providers from environment variables.
+fn build_providers_from_env() -> (Provider, Provider) {
+    let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
+    let gemini_model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string());
+    let openai_api_key = std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.is_empty());
+    let openai_model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4.1-nano".to_string());
 
-    match GeminiProvider::new(api_key.clone(), &model) {
+    let gemini_provider = match GeminiProvider::new(gemini_api_key.clone(), &gemini_model) {
         Ok(provider) => {
-            if api_key.is_some() {
-                info!("Gemini provider enabled using model {}", model);
+            if gemini_api_key.is_some() {
+                info!("Gemini provider enabled using model {}", gemini_model);
             } else {
-                info!(
-                    "Gemini provider initialized without API key; expecting per-request credentials."
-                );
+                info!("Gemini provider initialized without API key; expecting per-request credentials.");
             }
             Provider::Gemini(Arc::new(provider))
         }
@@ -237,7 +241,24 @@ fn build_provider_from_env() -> Provider {
             warn!("Failed to initialize Gemini provider: {err:?}");
             Provider::None
         }
-    }
+    };
+
+    let openai_provider = match OpenAIProvider::new(openai_api_key.clone(), &openai_model) {
+        Ok(provider) => {
+            if openai_api_key.is_some() {
+                info!("OpenAI provider enabled using model {}", openai_model);
+            } else {
+                info!("OpenAI provider initialized without API key; expecting per-request credentials.");
+            }
+            Provider::OpenAI(Arc::new(provider))
+        }
+        Err(err) => {
+            warn!("Failed to initialize OpenAI provider: {err:?}");
+            Provider::None
+        }
+    };
+
+    (gemini_provider, openai_provider)
 }
 
 /// Attempt AI translation with extracted hints.
@@ -250,12 +271,32 @@ async fn try_ai_translation_with_hints(
     hints: &StatementHint,
     language: &str,
 ) -> Option<String> {
-    match state.provider.clone() {
+    let selected_provider = payload
+        .provider
+        .as_deref()
+        .map(|provider| provider.to_ascii_lowercase())
+        .or_else(|| {
+            payload.model.as_deref().map(|model| {
+                if model.to_ascii_lowercase().starts_with("gpt-") {
+                    "openai".to_string()
+                } else {
+                    "gemini".to_string()
+                }
+            })
+        })
+        .unwrap_or_else(|| "gemini".to_string());
+
+    let provider = match selected_provider.as_str() {
+        "openai" | "deepseek" | "other" => state.openai_provider.clone(),
+        _ => state.gemini_provider.clone(),
+    };
+
+    match provider {
         Provider::None => {
-            debug!("No AI provider configured, skipping AI translation");
+            debug!("No AI provider configured for `{selected_provider}`, skipping AI translation");
             None
         }
-        provider => {
+        active_provider => {
             // Build prompt context with hints
             let context = PromptContext::with_hints(payload, hints.clone(), 1200, 600);
             let ai_options = AiRequestOptions {
@@ -263,7 +304,7 @@ async fn try_ai_translation_with_hints(
                 model: payload.model.as_deref(),
             };
 
-            let result = provider
+            let result = active_provider
                 .generate(&context, ai_options)
                 .await
                 .and_then(|candidate| {

@@ -12,8 +12,11 @@ export interface TerminalInstanceOptions {
   id: string;
   container: HTMLElement;
   cwd?: string;
+  theme?: 'light' | 'dark' | 'glass';
   onClose?: (id: string) => void;
 }
+
+type TerminalVisualTheme = 'light' | 'dark' | 'glass';
 
 export class TerminalInstance {
   public readonly id: string;
@@ -22,6 +25,7 @@ export class TerminalInstance {
   private container: HTMLElement;
   private cwd?: string;
   private isConnected: boolean = false;
+  private currentTheme: TerminalVisualTheme = 'light';
   private dataListener?: () => void;
   private exitListener?: () => void;
   private onClose?: (id: string) => void;
@@ -30,9 +34,10 @@ export class TerminalInstance {
     this.id = options.id;
     this.container = options.container;
     this.cwd = options.cwd;
+    this.currentTheme = options.theme ?? 'light';
     this.onClose = options.onClose;
 
-    // Create xterm.js terminal with dark theme
+    // Create xterm.js terminal with theme matching app chrome
     this.terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: 'block',
@@ -40,28 +45,7 @@ export class TerminalInstance {
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Consolas, monospace',
       lineHeight: 1.2,
       theme: {
-        background: '#1a1b26',
-        foreground: '#a9b1d6',
-        cursor: '#c0caf5',
-        cursorAccent: '#1a1b26',
-        selectionBackground: '#33467c',
-        selectionForeground: '#c0caf5',
-        black: '#32344a',
-        red: '#f7768e',
-        green: '#9ece6a',
-        yellow: '#e0af68',
-        blue: '#7aa2f7',
-        magenta: '#ad8ee6',
-        cyan: '#449dab',
-        white: '#787c99',
-        brightBlack: '#444b6a',
-        brightRed: '#ff7a93',
-        brightGreen: '#b9f27c',
-        brightYellow: '#ff9e64',
-        brightBlue: '#7da6ff',
-        brightMagenta: '#bb9af7',
-        brightCyan: '#0db9d7',
-        brightWhite: '#acb0d0',
+        ...TerminalInstance.getThemePalette(this.currentTheme),
       },
       allowProposedApi: true,
     });
@@ -201,6 +185,92 @@ export class TerminalInstance {
    */
   get connected(): boolean {
     return this.isConnected;
+  }
+
+  setTheme(theme: TerminalVisualTheme): void {
+    this.currentTheme = theme;
+    this.terminal.options.theme = TerminalInstance.getThemePalette(theme);
+  }
+
+  private static getThemePalette(theme: TerminalVisualTheme) {
+    if (theme === 'light') {
+      return {
+        background: '#f4f7ffcc',
+        foreground: '#20345f',
+        cursor: '#2f63dd',
+        cursorAccent: '#f4f7ff',
+        selectionBackground: '#4f79df55',
+        selectionForeground: '#20345f',
+        black: '#465981',
+        red: '#c24269',
+        green: '#2f7a53',
+        yellow: '#a66a19',
+        blue: '#3267dd',
+        magenta: '#7f53c6',
+        cyan: '#0d7e8f',
+        white: '#8ca1c8',
+        brightBlack: '#66799e',
+        brightRed: '#de5b82',
+        brightGreen: '#38956a',
+        brightYellow: '#bc7f2f',
+        brightBlue: '#4d7ff2',
+        brightMagenta: '#946ae2',
+        brightCyan: '#239aad',
+        brightWhite: '#b8c7e4',
+      };
+    }
+
+    if (theme === 'glass') {
+      return {
+        background: '#102248b8',
+        foreground: '#dde8ff',
+        cursor: '#7db2ff',
+        cursorAccent: '#102248',
+        selectionBackground: '#88aef966',
+        selectionForeground: '#eef4ff',
+        black: '#3a4c71',
+        red: '#ef7d9f',
+        green: '#8dcf96',
+        yellow: '#f0c37f',
+        blue: '#86b1ff',
+        magenta: '#c09cff',
+        cyan: '#7acede',
+        white: '#8fa8d4',
+        brightBlack: '#556993',
+        brightRed: '#ff8fb0',
+        brightGreen: '#a1e3aa',
+        brightYellow: '#ffd098',
+        brightBlue: '#9bc0ff',
+        brightMagenta: '#d0b2ff',
+        brightCyan: '#97ddeb',
+        brightWhite: '#c7d7f4',
+      };
+    }
+
+    return {
+      background: '#1a1b26',
+      foreground: '#a9b1d6',
+      cursor: '#c0caf5',
+      cursorAccent: '#1a1b26',
+      selectionBackground: '#33467c',
+      selectionForeground: '#c0caf5',
+      black: '#32344a',
+      red: '#f7768e',
+      green: '#9ece6a',
+      yellow: '#e0af68',
+      blue: '#7aa2f7',
+      magenta: '#ad8ee6',
+      cyan: '#449dab',
+      white: '#787c99',
+      brightBlack: '#444b6a',
+      brightRed: '#ff7a93',
+      brightGreen: '#b9f27c',
+      brightYellow: '#ff9e64',
+      brightBlue: '#7da6ff',
+      brightMagenta: '#bb9af7',
+      brightCyan: '#0db9d7',
+      brightWhite: '#acb0d0',
+    };
   }
 }
 

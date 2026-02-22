@@ -10,13 +10,13 @@ export interface TranslateLinePayload {
   code_after: string;
   language: string;
   line_index: number;
+  provider?: string;
   api_key?: string;
   model?: string;
   max_lines?: number;
 }
 
 export interface EditorSettings {
-  rustCoreUrl: string;
   autoTranslate: boolean;
   targetLanguage: string;
   maxLinesPerTranslation: number;
@@ -25,9 +25,17 @@ export interface EditorSettings {
     afterChars: number;
   };
   ai: {
-    provider: string;
+    provider: 'gemini' | 'openai' | 'deepseek' | 'other';
     apiKey: string;
     model: string;
+  };
+  editor?: {
+    tabSize?: 2 | 4 | 8;
+    insertSpaces?: boolean;
+    fontSize?: number;
+    fontFamily?: string;
+    renderWhitespace?: 'none' | 'trailing' | 'all';
+    cursorStyle?: 'line' | 'block' | 'underline';
   };
   ui?: {
     sidebarVisible?: boolean;
@@ -135,6 +143,11 @@ declare global {
       getZoomLevel?(): Promise<number>;
       setZoomLevel?(level: number): Promise<number>;
       onMenuCommand?(callback: (command: string) => void): () => void;
+      window?: {
+        minimize(): void;
+        maximize(): void;
+        close(): void;
+      };
       terminal?: TerminalAPI;
     };
   }

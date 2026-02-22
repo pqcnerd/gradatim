@@ -6,8 +6,10 @@ use anyhow::Result;
 use crate::prompt::PromptContext;
 
 mod gemini;
+mod openai;
 
 pub use gemini::GeminiProvider;
+pub use openai::OpenAIProvider;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -21,6 +23,7 @@ pub trait AiProvider: Send + Sync {
 #[derive(Clone)]
 pub enum Provider {
     Gemini(Arc<GeminiProvider>),
+    OpenAI(Arc<OpenAIProvider>),
     None,
 }
 
@@ -32,6 +35,7 @@ impl Provider {
     ) -> Result<String> {
         match self {
             Provider::Gemini(provider) => provider.generate(context, options).await,
+            Provider::OpenAI(provider) => provider.generate(context, options).await,
             Provider::None => anyhow::bail!("No AI provider configured"),
         }
     }

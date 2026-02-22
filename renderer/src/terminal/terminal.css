@@ -183,6 +183,8 @@
   flex: 1;
   position: relative;
   overflow: hidden;
+  background: var(--terminal-bg);
+  backdrop-filter: blur(20px) saturate(180%);
 }
 
 .terminal-instances {
@@ -216,15 +218,16 @@
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--panel-bg-strong) 88%, transparent);
+  background: var(--scrollbar-track);
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--scrollbar-thumb);
+  border-radius: 8px;
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 56%, transparent);
+  background: var(--scrollbar-thumb-hover);
 }
 
 .terminal-instance .xterm-screen {

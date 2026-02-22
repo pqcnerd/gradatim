@@ -2,7 +2,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULT_SETTINGS = {
-  rustCoreUrl: 'http://127.0.0.1:4888',
   autoTranslate: true,
   targetLanguage: 'c',
   maxLinesPerTranslation: 3,
@@ -14,6 +13,14 @@ const DEFAULT_SETTINGS = {
     provider: 'gemini',
     apiKey: '',
     model: 'gemini-2.5-flash',
+  },
+  editor: {
+    tabSize: 4,
+    insertSpaces: true,
+    fontSize: 16,
+    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+    renderWhitespace: 'trailing',
+    cursorStyle: 'line',
   },
   ui: {
     sidebarVisible: true,

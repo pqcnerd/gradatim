@@ -23,6 +23,7 @@ export class TerminalPanel {
   private minHeight: number = 100;
   private maxHeightRatio: number = 0.7;
   private _workspacePath: string | null = null;
+  private currentTheme: 'light' | 'dark' | 'glass' = 'light';
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -145,6 +146,7 @@ export class TerminalPanel {
       id: tabId,
       container: terminalElement,
       cwd: workingDir,
+      theme: this.currentTheme,
       onClose: (id) => this.handleTerminalExit(id),
     });
 
@@ -385,6 +387,13 @@ export class TerminalPanel {
    */
   get workspacePath(): string | null {
     return this._workspacePath;
+  }
+
+  setTheme(theme: 'light' | 'dark' | 'glass'): void {
+    this.currentTheme = theme;
+    for (const tab of this.tabs.values()) {
+      tab.instance.setTheme(theme);
+    }
   }
 }
 

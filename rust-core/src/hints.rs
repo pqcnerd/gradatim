@@ -7157,6 +7157,7 @@ mod tests {
             code_after: String::new(),
             language: "c".to_string(),
             line_index: 0,
+            provider: None,
             api_key: None,
             model: None,
             max_lines: None,

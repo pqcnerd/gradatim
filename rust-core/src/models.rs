@@ -17,6 +17,8 @@ pub struct TranslateLineRequest {
     #[serde(default)]
     pub line_index: usize,
     #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
     pub model: Option<String>,

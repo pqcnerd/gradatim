@@ -29,6 +29,13 @@ const workspaceContainer = document.querySelector('.workspace') as HTMLElement |
 const activitySectionElement = document.querySelector('.activity-section') as HTMLElement | null;
 const filesSectionElement = document.querySelector('.files-section') as HTMLElement | null;
 const terminalPanelContainer = document.getElementById('terminal-panel');
+const menuGroups = Array.from(document.querySelectorAll('.menu-group')) as HTMLDivElement[];
+const menuCommands = Array.from(document.querySelectorAll('.menu-command')) as HTMLButtonElement[];
+const menuItems = Array.from(document.querySelectorAll('.menu-item')) as HTMLButtonElement[];
+const menuDropdowns = Array.from(document.querySelectorAll('.menu-dropdown')) as HTMLDivElement[];
+const windowMinimizeButton = document.getElementById('window-minimize') as HTMLButtonElement | null;
+const windowMaximizeButton = document.getElementById('window-maximize') as HTMLButtonElement | null;
+const windowCloseButton = document.getElementById('window-close') as HTMLButtonElement | null;
 
 if (!editorContainer || !statusList || !toast || !fileTreeContainer || !tabList) {
   throw new Error('Renderer root elements are missing. Check index.html structure.');
@@ -51,6 +58,7 @@ type EditorTab = {
   model: monaco.editor.ITextModel;
   dirty: boolean;
   language: string;
+  translatedLines: Set<number>;
 };
 
 const tabs: EditorTab[] = [];
@@ -62,16 +70,19 @@ let disposeMenuListener: (() => void) | undefined;
 let sidebarVisible = true;
 let activityVisible = true;
 let minimapEnabled = true;
+let wordWrapEnabled = false;
+let lineNumbersEnabled = true;
 let zoomLevel = 0;
 let currentTheme: UiTheme = 'light';
 let terminalPanel: TerminalPanel | null = null;
+let activeTopMenuKey: string | null = null;
 
 monaco.editor.defineTheme('gradatim-glass', {
   base: 'vs-dark',
   inherit: true,
   rules: [],
   colors: {
-    'editor.background': '#050913CC',
+    'editor.background': '#05091399',
     'editor.foreground': '#E4EDFF',
     'editorLineNumber.foreground': '#7283A9',
     'editorLineNumber.activeForeground': '#BFD2FA',
@@ -89,7 +100,7 @@ monaco.editor.defineTheme('gradatim-light', {
   inherit: true,
   rules: [],
   colors: {
-    'editor.background': '#FFFFFFC8',
+    'editor.background': '#FFFFFFA6',
     'editor.foreground': '#1D2B4F',
     'editorLineNumber.foreground': '#7A88A8',
     'editorLineNumber.activeForeground': '#415A97',
@@ -125,7 +136,13 @@ const editor = monaco.editor.create(editorContainer, {
   // Tab settings
   tabSize: 4,
   insertSpaces: true,
-  detectIndentation: false
+  detectIndentation: false,
+  bracketPairColorization: { enabled: true },
+  smoothScrolling: true,
+  stickyScroll: { enabled: true },
+  linkedEditing: true,
+  wordWrap: 'off',
+  lineNumbers: 'on'
 });
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
@@ -141,8 +158,8 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 // Initialize terminal panel
 if (terminalPanelContainer) {
   terminalPanel = new TerminalPanel(terminalPanelContainer);
-  // Start hidden by default
-  terminalPanel.hide();
+  // Start visible by default and open a session right away.
+  terminalPanel.show();
   
   // Listen for terminal resize events to adjust editor layout
   window.addEventListener('terminal-panel-resize', () => {
@@ -269,6 +286,7 @@ const applyTheme = (theme: UiTheme, persist = false) => {
   currentTheme = normalizeTheme(theme);
   document.body.dataset.theme = currentTheme;
   monaco.editor.setTheme(currentTheme === 'light' ? 'gradatim-light' : 'gradatim-glass');
+  terminalPanel?.setTheme(currentTheme);
   if (themeCycleButton) {
     const label = currentTheme[0].toUpperCase() + currentTheme.slice(1);
     themeCycleButton.textContent = label;
@@ -287,6 +305,34 @@ const applyMinimapPreference = (enabled: boolean, persist = false) => {
   if (persist) {
     persistUiPreferences();
   }
+};
+
+const applyWordWrapPreference = (enabled: boolean) => {
+  wordWrapEnabled = enabled;
+  editor.updateOptions({
+    wordWrap: enabled ? 'on' : 'off'
+  });
+};
+
+const applyLineNumbersPreference = (enabled: boolean) => {
+  lineNumbersEnabled = enabled;
+  editor.updateOptions({
+    lineNumbers: enabled ? 'on' : 'off'
+  });
+};
+
+const applyEditorPreferences = (prefs?: EditorSettings['editor']) => {
+  if (!prefs) {
+    return;
+  }
+  editor.updateOptions({
+    tabSize: prefs.tabSize ?? 4,
+    insertSpaces: prefs.insertSpaces ?? true,
+    fontSize: prefs.fontSize ?? 16,
+    fontFamily: prefs.fontFamily ?? "'JetBrains Mono', 'Fira Code', monospace",
+    renderWhitespace: prefs.renderWhitespace ?? 'trailing',
+    cursorStyle: prefs.cursorStyle ?? 'line'
+  });
 };
 
 const applyZoomLevel = async (value: number, persist = false) => {
@@ -395,6 +441,14 @@ const handleMenuCommand = (command: string) => {
     case 'view:toggleMinimap':
       applyMinimapPreference(!minimapEnabled, true);
       break;
+    case 'view:toggleWordWrap':
+      applyWordWrapPreference(!wordWrapEnabled);
+      pushStatus(`Word wrap ${wordWrapEnabled ? 'enabled' : 'disabled'}.`);
+      break;
+    case 'view:toggleLineNumbers':
+      applyLineNumbersPreference(!lineNumbersEnabled);
+      pushStatus(`Line numbers ${lineNumbersEnabled ? 'shown' : 'hidden'}.`);
+      break;
     case 'view:toggleTerminal':
       terminalPanel?.toggle();
       break;
@@ -458,6 +512,7 @@ const setActiveTab = (tabId: string) => {
   editor.setModel(nextTab.model);
   monaco.editor.setModelLanguage(nextTab.model, nextTab.language);
   renderTabs();
+  refreshUntranslatedDecorations();
   editor.focus();
 };
 
@@ -493,7 +548,8 @@ const createUntitledTab = (initialValue = '', language?: string) => {
     path: undefined,
     model,
     dirty: false,
-    language: lang
+    language: lang,
+    translatedLines: new Set<number>()
   };
   tabs.push(newTab);
   setActiveTab(newTab.id);
@@ -538,7 +594,6 @@ const buildTreeNode = (node: DirectoryNode): HTMLLIElement => {
     button.addEventListener('click', () => {
       const collapsed = item.classList.toggle('collapsed');
       glyph.textContent = collapsed ? '▸' : '▾';
-      children.hidden = collapsed;
     });
   } else {
     button.addEventListener('click', () => {
@@ -600,6 +655,7 @@ const openFileInTab = async (node: DirectoryNode) => {
     if (existing) {
       existing.model.setValue(file.content);
       existing.dirty = false;
+      existing.translatedLines.clear();
       renderTabs();
       setActiveTab(existing.id);
       pushStatus(`[${existing.title}] Reloaded from disk.`);
@@ -614,7 +670,8 @@ const openFileInTab = async (node: DirectoryNode) => {
       absolutePath: absolutePath ?? undefined,
       model,
       dirty: false,
-      language
+      language,
+      translatedLines: new Set<number>()
     };
     tabs.push(newTab);
     setActiveTab(newTab.id);
@@ -635,6 +692,7 @@ const openFileViaDialog = async () => {
     if (existing) {
       existing.model.setValue(file.content);
       existing.dirty = false;
+      existing.translatedLines.clear();
       renderTabs();
       setActiveTab(existing.id);
       pushStatus(`[${existing.title}] Reloaded from disk.`);
@@ -649,7 +707,8 @@ const openFileViaDialog = async () => {
       absolutePath: file.absolutePath,
       model,
       dirty: false,
-      language
+      language,
+      translatedLines: new Set<number>()
     };
     tabs.push(newTab);
     setActiveTab(newTab.id);
@@ -763,7 +822,8 @@ window.addEventListener('beforeunload', () => {
 });
 
 let autoTranslate = true;
-let lastDecorations: string[] = [];
+let transientHighlightDecorations: string[] = [];
+let untranslatedDecorations: string[] = [];
 let requestCounter = 0;
 const pendingRequests = new Map<string, number>();
 let lastTriggeredLine: number | null = null;
@@ -812,16 +872,76 @@ const closeLanguageMenu = () => {
   languageMenu?.setAttribute('aria-hidden', 'true');
 };
 
+const getTopMenuElements = (menuKey: string) => {
+  const group = menuGroups.find(entry => entry.dataset.menu === menuKey);
+  const trigger = group?.querySelector('.menu-item') as HTMLButtonElement | null;
+  const dropdown = document.getElementById(`menu-${menuKey}-dropdown`) as HTMLDivElement | null;
+  return { group, trigger, dropdown };
+};
+
+const positionTopMenu = (menuKey: string) => {
+  const { trigger, dropdown } = getTopMenuElements(menuKey);
+  if (!trigger || !dropdown) {
+    return;
+  }
+  const rect = trigger.getBoundingClientRect();
+  dropdown.style.left = `${rect.left}px`;
+  dropdown.style.top = `${rect.bottom + 6}px`;
+  dropdown.style.minWidth = `${Math.max(190, Math.round(rect.width + 36))}px`;
+};
+
+const closeTopMenus = () => {
+  activeTopMenuKey = null;
+  menuGroups.forEach(group => {
+    const button = group.querySelector('.menu-item') as HTMLButtonElement | null;
+    const menuKey = group.dataset.menu ?? '';
+    const dropdown = document.getElementById(`menu-${menuKey}-dropdown`) as HTMLDivElement | null;
+    button?.setAttribute('aria-expanded', 'false');
+    dropdown?.classList.remove('open');
+    dropdown?.setAttribute('aria-hidden', 'true');
+    group.classList.remove('open');
+  });
+};
+
+const openTopMenu = (menuKey: string) => {
+  closeTopMenus();
+  const { group, trigger, dropdown } = getTopMenuElements(menuKey);
+  if (!group || !trigger || !dropdown) {
+    return;
+  }
+  activeTopMenuKey = menuKey;
+  positionTopMenu(menuKey);
+  group.classList.add('open');
+  trigger.setAttribute('aria-expanded', 'true');
+  dropdown.classList.add('open');
+  dropdown.setAttribute('aria-hidden', 'false');
+};
+
+const toggleTopMenu = (menuKey: string) => {
+  if (activeTopMenuKey === menuKey) {
+    closeTopMenus();
+  } else {
+    openTopMenu(menuKey);
+  }
+};
+
 const applyTargetLanguage = (nextLanguage: string, persist = true) => {
   const normalizedLanguage = nextLanguage.toLowerCase() === 'python' ? 'python' : 'c';
   if (!currentSettings) {
     currentSettings = {
-      rustCoreUrl: '',
       autoTranslate,
       targetLanguage: normalizedLanguage,
       maxLinesPerTranslation: defaultMaxLines,
       context: { beforeChars: contextLimits.before, afterChars: contextLimits.after },
-      ai: { provider: 'gemini', apiKey: '', model: 'gemini-1.5-flash' },
+      ai: { provider: 'gemini', apiKey: '', model: 'gemini-2.5-flash' },
+      editor: {
+        tabSize: 4,
+        insertSpaces: true,
+        fontSize: 16,
+        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        renderWhitespace: 'trailing',
+        cursorStyle: 'line'
+      },
       ui: {
         sidebarVisible,
         activityVisible,
@@ -878,8 +998,32 @@ languageTrigger?.addEventListener('click', () => {
   if (isOpen) {
     closeLanguageMenu();
   } else {
+    closeTopMenus();
     openLanguageMenu();
   }
+});
+
+menuItems.forEach(button => {
+  button.addEventListener('click', event => {
+    event.stopPropagation();
+    const menuKey = button.closest('.menu-group')?.getAttribute('data-menu');
+    if (!menuKey) {
+      return;
+    }
+    closeLanguageMenu();
+    toggleTopMenu(menuKey);
+  });
+});
+
+menuCommands.forEach(commandButton => {
+  commandButton.addEventListener('click', () => {
+    const command = commandButton.dataset.command;
+    if (!command) {
+      return;
+    }
+    handleMenuCommand(command);
+    closeTopMenus();
+  });
 });
 
 languageOptions.forEach(option => {
@@ -890,14 +1034,17 @@ languageOptions.forEach(option => {
 });
 
 document.addEventListener('click', event => {
-  if (!languageDropdown && !languageMenu) {
-    return;
-  }
   const target = event.target as Node;
   const clickedDropdown = languageDropdown?.contains(target) ?? false;
   const clickedMenu = languageMenu?.contains(target) ?? false;
   if (!clickedDropdown && !clickedMenu) {
     closeLanguageMenu();
+  }
+
+  const clickedTopMenuGroup = menuGroups.some(group => group.contains(target));
+  const clickedTopMenuDropdown = menuDropdowns.some(dropdown => dropdown.contains(target));
+  if (!clickedTopMenuGroup && !clickedTopMenuDropdown) {
+    closeTopMenus();
   }
 });
 
@@ -905,11 +1052,30 @@ document.addEventListener('click', event => {
 if (languageMenu && languageMenu.parentElement !== document.body) {
   document.body.appendChild(languageMenu);
 }
+// Render top menus at the document level so they are not clipped by editor/terminal layers.
+menuDropdowns.forEach(dropdown => {
+  if (dropdown.parentElement !== document.body) {
+    document.body.appendChild(dropdown);
+  }
+});
 
 window.addEventListener('resize', () => {
   if (languageDropdown?.classList.contains('open')) {
     positionLanguageMenu();
   }
+  if (activeTopMenuKey) {
+    positionTopMenu(activeTopMenuKey);
+  }
+});
+
+windowMinimizeButton?.addEventListener('click', () => {
+  window.electronAPI?.window?.minimize();
+});
+windowMaximizeButton?.addEventListener('click', () => {
+  window.electronAPI?.window?.maximize();
+});
+windowCloseButton?.addEventListener('click', () => {
+  window.electronAPI?.window?.close();
 });
 
 themeCycleButton?.addEventListener('click', () => {
@@ -1112,9 +1278,6 @@ const showToast = (message: string) => {
   }, 3200);
 };
 
-createUntitledTab(welcomeSnippet);
-loadWorkspaceTree();
-
 const highlightLine = (
   tabId: string,
   lineNumber: number,
@@ -1124,7 +1287,7 @@ const highlightLine = (
     return;
   }
   const className = variant === 'error' ? 'line-commit-error' : 'line-commit-decoration';
-  lastDecorations = editor.deltaDecorations(lastDecorations, [
+  transientHighlightDecorations = editor.deltaDecorations(transientHighlightDecorations, [
     {
       range: new monaco.Range(lineNumber, 1, lineNumber, 1),
       options: {
@@ -1136,9 +1299,93 @@ const highlightLine = (
   ]);
 
   setTimeout(() => {
-    lastDecorations = editor.deltaDecorations(lastDecorations, []);
+    transientHighlightDecorations = editor.deltaDecorations(transientHighlightDecorations, []);
   }, 1100);
 };
+
+const isIgnorableLine = (trimmed: string) =>
+  !trimmed ||
+  trimmed.startsWith('//') ||
+  trimmed.startsWith('#') ||
+  trimmed.startsWith('/*') ||
+  trimmed.startsWith('*') ||
+  trimmed.startsWith('*/') ||
+  /^[{}()[\];,]+$/.test(trimmed);
+
+const refreshUntranslatedDecorations = () => {
+  const active = getActiveTab();
+  if (!active) {
+    untranslatedDecorations = editor.deltaDecorations(untranslatedDecorations, []);
+    return;
+  }
+  const lineCount = active.model.getLineCount();
+  const nextDecorations: monaco.editor.IModelDeltaDecoration[] = [];
+  for (let lineNumber = 1; lineNumber <= lineCount; lineNumber += 1) {
+    const trimmed = active.model.getLineContent(lineNumber).trim();
+    if (isIgnorableLine(trimmed)) {
+      continue;
+    }
+    if (active.translatedLines.has(lineNumber)) {
+      continue;
+    }
+    nextDecorations.push({
+      range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+      options: {
+        linesDecorationsClassName: 'line-untranslated-gutter'
+      }
+    });
+  }
+  untranslatedDecorations = editor.deltaDecorations(untranslatedDecorations, nextDecorations);
+};
+
+const invalidateTranslatedLines = (
+  tab: EditorTab,
+  event: monaco.editor.IModelContentChangedEvent
+) => {
+  // Monaco can emit multiple changes in one event. Process from bottom to top
+  // so line-number shifts are applied consistently.
+  const orderedChanges = [...event.changes].sort(
+    (a, b) => b.range.startLineNumber - a.range.startLineNumber
+  );
+
+  for (const change of orderedChanges) {
+    const startLine = change.range.startLineNumber;
+    const endLine = change.range.endLineNumber;
+    const replacedLineCount = endLine - startLine;
+    const insertedLineCount = (change.text.match(/\n/g) ?? []).length;
+    const lineDelta = insertedLineCount - replacedLineCount;
+    const preserveStartLine =
+      change.range.startLineNumber === change.range.endLineNumber &&
+      change.range.startColumn === change.range.endColumn &&
+      change.text.startsWith('\n');
+
+    const remapped = new Set<number>();
+    tab.translatedLines.forEach(line => {
+      if (line < startLine) {
+        remapped.add(line);
+        return;
+      }
+      if (line > endLine) {
+        remapped.add(line + lineDelta);
+        return;
+      }
+      if (preserveStartLine && line === startLine) {
+        remapped.add(line);
+      }
+    });
+    tab.translatedLines = remapped;
+  }
+};
+
+const markTranslatedLineRange = (tab: EditorTab, startLine: number, totalLines: number) => {
+  const finalLine = Math.min(tab.model.getLineCount(), startLine + Math.max(1, totalLines) - 1);
+  for (let line = startLine; line <= finalLine; line += 1) {
+    tab.translatedLines.add(line);
+  }
+};
+
+createUntitledTab(welcomeSnippet);
+loadWorkspaceTree();
 
 const collectContext = (model: monaco.editor.ITextModel, lineNumber: number) => {
   const beforeRange = new monaco.Range(1, 1, lineNumber, 1);
@@ -1203,8 +1450,10 @@ const applyTranslation = (tabId: string, lineNumber: number, rawSnippet: string)
 
   const range = new monaco.Range(lineNumber, 1, lineNumber, original.length + 1);
   model.pushEditOperations([], [{ range, text: indentedSnippet }], () => null);
+  markTranslatedLineRange(targetTab, lineNumber, countSnippetLines(indentedSnippet));
   targetTab.dirty = true;
   renderTabs();
+  refreshUntranslatedDecorations();
   highlightLine(tabId, lineNumber, 'success');
 
   // Position cursor appropriately after insertion
@@ -1309,6 +1558,7 @@ const buildPayload = (
     code_after,
     language: currentSettings?.targetLanguage ?? 'c',
     line_index: lineNumber - 1,
+    provider: currentSettings?.ai.provider || undefined,
     api_key: apiKey ? apiKey : undefined,
     model: currentSettings?.ai.model || undefined,
     max_lines: currentSettings?.maxLinesPerTranslation ?? defaultMaxLines,
@@ -1445,6 +1695,10 @@ const enqueueTranslation = async (lineNumber: number, trigger: LineTrigger) => {
 
 editor.onDidChangeModelContent((event: monaco.editor.IModelContentChangedEvent) => {
   const activeTab = getActiveTab();
+  if (activeTab) {
+    invalidateTranslatedLines(activeTab, event);
+    refreshUntranslatedDecorations();
+  }
   if (activeTab && !activeTab.dirty) {
     activeTab.dirty = true;
     renderTabs();
@@ -1498,6 +1752,7 @@ initSettingsUI({
       false
     );
     applyTheme(normalizeTheme(uiPrefs.theme), false);
+    applyEditorPreferences(settings.editor);
 
     if (autoToggle) {
       ignoreAutoToggleChange = true;
@@ -1633,6 +1888,10 @@ const buildCurrentFile = async () => {
 
 // Add keyboard shortcut for terminal toggle (Ctrl+`)
 document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key === 'Escape') {
+    closeLanguageMenu();
+    closeTopMenus();
+  }
   if (e.ctrlKey && e.key === '`') {
     e.preventDefault();
     terminalPanel?.toggle();

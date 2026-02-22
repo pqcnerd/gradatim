@@ -1,17 +1,123 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { promises: fsPromises } = require('node:fs');
+const { spawn } = require('node:child_process');
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const { createConfigStore, DEFAULT_SETTINGS } = require('./config-store');
 const ptyManager = require('./pty-manager');
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const devServerURL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173';
-const fallbackRustEndpoint = process.env.RUST_CORE_URL || DEFAULT_SETTINGS.rustCoreUrl;
+const RUST_CORE_ADDR = process.env.RUST_CORE_ADDR || '127.0.0.1:4888';
+const rustEndpoint = `http://${RUST_CORE_ADDR}`;
 let workspaceRoot = process.cwd();
 let configStore;
 let currentSettings = { ...DEFAULT_SETTINGS };
-let rustEndpoint = fallbackRustEndpoint;
+let rustCoreProcess = null;
+let rustCoreReadyPromise = null;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const isRustCoreResponsive = async () => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1200);
+  try {
+    await fetch(`${rustEndpoint}/translate-line`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: controller.signal
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const waitForRustCoreReady = async (timeoutMs = 20000) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await isRustCoreResponsive()) {
+      return true;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(300);
+  }
+  return false;
+};
+
+const resolvePackagedRustCoreBinary = () => {
+  const binName = process.platform === 'win32' ? 'rust-core.exe' : 'rust-core';
+  const candidates = [
+    path.join(process.resourcesPath, 'rust-core', binName),
+    path.join(process.resourcesPath, binName),
+    path.join(__dirname, '..', 'rust-core', 'target', 'release', binName)
+  ];
+  return candidates.find(candidate => fs.existsSync(candidate)) || null;
+};
+
+const startRustCoreProcess = () => {
+  if (rustCoreProcess && !rustCoreProcess.killed) {
+    return;
+  }
+
+  const env = { ...process.env, RUST_CORE_ADDR };
+  if (isDev) {
+    if (process.platform === 'win32') {
+      const buildScript = path.join(__dirname, '..', 'rust-core', 'build.ps1');
+      rustCoreProcess = spawn(
+        'powershell.exe',
+        ['-ExecutionPolicy', 'Bypass', '-File', buildScript, 'run'],
+        {
+          cwd: path.join(__dirname, '..', 'rust-core'),
+          env,
+          windowsHide: true,
+          stdio: 'ignore'
+        }
+      );
+    } else {
+      rustCoreProcess = spawn('cargo', ['run'], {
+        cwd: path.join(__dirname, '..', 'rust-core'),
+        env,
+        stdio: 'ignore'
+      });
+    }
+  } else {
+    const binary = resolvePackagedRustCoreBinary();
+    if (!binary) {
+      return;
+    }
+    rustCoreProcess = spawn(binary, [], {
+      cwd: path.dirname(binary),
+      env,
+      windowsHide: true,
+      stdio: 'ignore'
+    });
+  }
+
+  rustCoreProcess?.on('exit', () => {
+    rustCoreProcess = null;
+    rustCoreReadyPromise = null;
+  });
+  rustCoreProcess?.unref?.();
+};
+
+const ensureRustCoreReady = async () => {
+  if (rustCoreReadyPromise) {
+    return rustCoreReadyPromise;
+  }
+  rustCoreReadyPromise = (async () => {
+    if (await isRustCoreResponsive()) {
+      return true;
+    }
+    startRustCoreProcess();
+    return waitForRustCoreReady();
+  })();
+  return rustCoreReadyPromise;
+};
 
 function createMainWindow() {
   const win = new BrowserWindow({
@@ -19,6 +125,8 @@ function createMainWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 600,
+    frame: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -42,16 +150,44 @@ function createMainWindow() {
 app.whenReady().then(() => {
   configStore = createConfigStore(app);
   currentSettings = configStore.get();
-  rustEndpoint = currentSettings.rustCoreUrl || fallbackRustEndpoint;
+  void ensureRustCoreReady();
 
   const win = createMainWindow();
   const menu = Menu.buildFromTemplate(buildMenuTemplate(win));
   Menu.setApplicationMenu(menu);
+  win.setMenuBarVisibility(false);
 
   // Set up terminal PTY handlers
   ptyManager.setupIpcHandlers(ipcMain, win);
 
+  ipcMain.on('window:minimize', event => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    targetWindow?.minimize();
+  });
+
+  ipcMain.on('window:maximize', event => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!targetWindow) {
+      return;
+    }
+    if (targetWindow.isMaximized()) {
+      targetWindow.unmaximize();
+    } else {
+      targetWindow.maximize();
+    }
+  });
+
+  ipcMain.on('window:close', event => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender);
+    targetWindow?.close();
+  });
+
   ipcMain.handle('translate-line', async (_event, payload) => {
+    const ready = await ensureRustCoreReady();
+    if (!ready) {
+      return { kind: 'error', message: 'Rust core is starting. Please try again in a moment.' };
+    }
+
     const body = {
       ...payload,
       api_key: payload.api_key || currentSettings.ai?.apiKey || undefined,
@@ -79,7 +215,6 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:get', () => currentSettings);
   ipcMain.handle('settings:save', (_event, payload = {}) => {
     currentSettings = configStore.set(payload);
-    rustEndpoint = currentSettings.rustCoreUrl || fallbackRustEndpoint;
     return currentSettings;
   });
 
@@ -213,6 +348,9 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // Close all terminal sessions
   ptyManager.closeAllTerminals();
+  if (rustCoreProcess && !rustCoreProcess.killed) {
+    rustCoreProcess.kill();
+  }
 
   if (process.platform !== 'darwin') {
     app.quit();
