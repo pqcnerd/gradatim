@@ -10,6 +10,11 @@ files:
   - electron/pty-manager.js
   - renderer/dist/**
 asar: false
+extraResources:
+  - from: rust-core/target/release/rust-core.exe
+    to: rust-core/rust-core.exe
+    filter:
+      - "**/*"
 extraMetadata:
   main: electron/main.js
 win:
