@@ -7,21 +7,27 @@ import { TerminalPanel } from './terminal';
 import type { DirectoryNode, EditorSettings, TranslateLinePayload } from './types/electron';
 
 type LineTrigger = 'enter' | 'shortcut' | 'regenerate';
+type UiTheme = 'light' | 'dark' | 'glass';
 
 const editorContainer = document.getElementById('editor');
 const statusList = document.getElementById('status-log');
 const autoToggle = document.getElementById('auto-toggle') as HTMLInputElement | null;
-const languageSelect = document.getElementById('language-select') as HTMLSelectElement | null;
+const languageDropdown = document.getElementById('language-dropdown') as HTMLDivElement | null;
+const languageTrigger = document.getElementById('language-trigger') as HTMLButtonElement | null;
+const languageMenu = document.getElementById('language-menu') as HTMLDivElement | null;
+const languageTriggerValue = document.getElementById('language-trigger-value');
+const languageOptions = Array.from(document.querySelectorAll('.language-option')) as HTMLButtonElement[];
 const regenerateButton = document.getElementById('regenerate-btn') as HTMLButtonElement | null;
+const themeCycleButton = document.getElementById('theme-cycle') as HTMLButtonElement | null;
 const toast = document.getElementById('toast');
 const fileTreeContainer = document.getElementById('file-tree');
 const tabList = document.getElementById('tab-list') as HTMLDivElement | null;
 const tabAddButton = document.getElementById('tab-add') as HTMLButtonElement | null;
 const workspaceLabel = document.getElementById('workspace-label');
 const sidebarRefreshButton = document.getElementById('sidebar-refresh');
-const sidebarElement = document.querySelector('.sidebar') as HTMLElement | null;
 const workspaceContainer = document.querySelector('.workspace') as HTMLElement | null;
-const statusPanelElement = document.querySelector('.status-panel') as HTMLElement | null;
+const activitySectionElement = document.querySelector('.activity-section') as HTMLElement | null;
+const filesSectionElement = document.querySelector('.files-section') as HTMLElement | null;
 const terminalPanelContainer = document.getElementById('terminal-panel');
 
 if (!editorContainer || !statusList || !toast || !fileTreeContainer || !tabList) {
@@ -57,7 +63,44 @@ let sidebarVisible = true;
 let activityVisible = true;
 let minimapEnabled = true;
 let zoomLevel = 0;
+let currentTheme: UiTheme = 'light';
 let terminalPanel: TerminalPanel | null = null;
+
+monaco.editor.defineTheme('gradatim-glass', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#050913CC',
+    'editor.foreground': '#E4EDFF',
+    'editorLineNumber.foreground': '#7283A9',
+    'editorLineNumber.activeForeground': '#BFD2FA',
+    'editorCursor.foreground': '#60A5FA',
+    'editor.selectionBackground': '#60A5FA44',
+    'editor.inactiveSelectionBackground': '#60A5FA22',
+    'editor.lineHighlightBackground': '#60A5FA12',
+    'editorIndentGuide.background1': '#8AA1CC22',
+    'editorIndentGuide.activeBackground1': '#AFC2EA55'
+  }
+});
+
+monaco.editor.defineTheme('gradatim-light', {
+  base: 'vs',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#FFFFFFC8',
+    'editor.foreground': '#1D2B4F',
+    'editorLineNumber.foreground': '#7A88A8',
+    'editorLineNumber.activeForeground': '#415A97',
+    'editorCursor.foreground': '#3265D7',
+    'editor.selectionBackground': '#3265D744',
+    'editor.inactiveSelectionBackground': '#3265D722',
+    'editor.lineHighlightBackground': '#3265D714',
+    'editorIndentGuide.background1': '#7B93C033',
+    'editorIndentGuide.activeBackground1': '#5972B766'
+  }
+});
 
 const editor = monaco.editor.create(editorContainer, {
   language: 'c',
@@ -69,7 +112,7 @@ const editor = monaco.editor.create(editorContainer, {
   cursorSmoothCaretAnimation: 'on',
   renderWhitespace: 'trailing',
   scrollBeyondLastLine: false,
-  theme: 'vs-dark',
+  theme: 'gradatim-glass',
   quickSuggestions: false,
   suggestOnTriggerCharacters: false,
   wordBasedSuggestions: 'off',
@@ -190,7 +233,8 @@ const persistUiPreferences = () => {
         sidebarVisible,
         activityVisible,
         minimapEnabled,
-        zoomLevel
+        zoomLevel,
+        theme: currentTheme
       }
     })
     .catch(() => {});
@@ -198,7 +242,7 @@ const persistUiPreferences = () => {
 
 const applySidebarVisibility = (visible: boolean, persist = false) => {
   sidebarVisible = visible;
-  sidebarElement?.classList.toggle('is-hidden', !visible);
+  filesSectionElement?.classList.toggle('is-hidden', !visible);
   workspaceContainer?.classList.toggle('sidebar-hidden', !visible);
   if (persist) {
     persistUiPreferences();
@@ -207,8 +251,29 @@ const applySidebarVisibility = (visible: boolean, persist = false) => {
 
 const applyActivityVisibility = (visible: boolean, persist = false) => {
   activityVisible = visible;
-  statusPanelElement?.classList.toggle('is-hidden', !visible);
+  activitySectionElement?.classList.toggle('is-hidden', !visible);
   workspaceContainer?.classList.toggle('activity-hidden', !visible);
+  if (persist) {
+    persistUiPreferences();
+  }
+};
+
+const normalizeTheme = (theme?: string): UiTheme => {
+  if (theme === 'dark' || theme === 'glass') {
+    return theme;
+  }
+  return 'light';
+};
+
+const applyTheme = (theme: UiTheme, persist = false) => {
+  currentTheme = normalizeTheme(theme);
+  document.body.dataset.theme = currentTheme;
+  monaco.editor.setTheme(currentTheme === 'light' ? 'gradatim-light' : 'gradatim-glass');
+  if (themeCycleButton) {
+    const label = currentTheme[0].toUpperCase() + currentTheme.slice(1);
+    themeCycleButton.textContent = label;
+    themeCycleButton.title = `Theme: ${label}`;
+  }
   if (persist) {
     persistUiPreferences();
   }
@@ -708,7 +773,7 @@ let ignoreAutoToggleChange = true;
 const contextLimits = { before: 1600, after: 900 };
 let currentSettings: EditorSettings | null = null;
 const defaultMaxLines = 3;
-const STATUS_LOG_LIMIT = 7;
+const STATUS_LOG_LIMIT = 40;
 
 type PendingPromptContext = {
   key: string;
@@ -722,6 +787,71 @@ type PendingPromptContext = {
 const pendingPrompts = new Map<string, PendingPromptContext>();
 
 const makePromptKey = (tabId: string, lineNumber: number) => `${tabId}:${lineNumber}`;
+
+const positionLanguageMenu = () => {
+  if (languageTrigger && languageMenu) {
+    const rect = languageTrigger.getBoundingClientRect();
+    languageMenu.style.left = `${rect.left}px`;
+    languageMenu.style.top = `${rect.bottom + 6}px`;
+    languageMenu.style.width = `${Math.max(180, Math.round(rect.width + 56))}px`;
+  }
+};
+
+const openLanguageMenu = () => {
+  positionLanguageMenu();
+  languageDropdown?.classList.add('open');
+  languageMenu?.classList.add('open');
+  languageTrigger?.setAttribute('aria-expanded', 'true');
+  languageMenu?.setAttribute('aria-hidden', 'false');
+};
+
+const closeLanguageMenu = () => {
+  languageDropdown?.classList.remove('open');
+  languageMenu?.classList.remove('open');
+  languageTrigger?.setAttribute('aria-expanded', 'false');
+  languageMenu?.setAttribute('aria-hidden', 'true');
+};
+
+const applyTargetLanguage = (nextLanguage: string, persist = true) => {
+  const normalizedLanguage = nextLanguage.toLowerCase() === 'python' ? 'python' : 'c';
+  if (!currentSettings) {
+    currentSettings = {
+      rustCoreUrl: '',
+      autoTranslate,
+      targetLanguage: normalizedLanguage,
+      maxLinesPerTranslation: defaultMaxLines,
+      context: { beforeChars: contextLimits.before, afterChars: contextLimits.after },
+      ai: { provider: 'gemini', apiKey: '', model: 'gemini-1.5-flash' },
+      ui: {
+        sidebarVisible,
+        activityVisible,
+        minimapEnabled,
+        zoomLevel,
+        theme: currentTheme
+      }
+    };
+  } else {
+    currentSettings.targetLanguage = normalizedLanguage;
+  }
+
+  if (languageTriggerValue) {
+    languageTriggerValue.textContent = normalizedLanguage === 'python' ? 'Python' : 'C';
+  }
+  languageOptions.forEach(option => {
+    const selected = option.dataset.language === normalizedLanguage;
+    option.classList.toggle('active', selected);
+    option.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+
+  if (persist) {
+    const savePromise = window.electronAPI?.saveSettings?.({ targetLanguage: normalizedLanguage });
+    savePromise?.catch(error => {
+      showToast(
+        `Failed to persist language: ${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  }
+};
 
 autoToggle?.addEventListener('change', (event: Event) => {
   if (ignoreAutoToggleChange) {
@@ -743,27 +873,50 @@ regenerateButton?.addEventListener('click', () => {
   enqueueTranslation(lastTriggeredLine, 'regenerate');
 });
 
-languageSelect?.addEventListener('change', (event: Event) => {
-  const nextLanguage = (event.target as HTMLSelectElement).value;
-  if (!currentSettings) {
-    currentSettings = {
-      rustCoreUrl: '',
-      autoTranslate,
-      targetLanguage: nextLanguage,
-      maxLinesPerTranslation: defaultMaxLines,
-      context: { beforeChars: contextLimits.before, afterChars: contextLimits.after },
-      ai: { provider: 'gemini', apiKey: '', model: 'gemini-1.5-flash' },
-    };
+languageTrigger?.addEventListener('click', () => {
+  const isOpen = languageDropdown?.classList.contains('open');
+  if (isOpen) {
+    closeLanguageMenu();
   } else {
-    currentSettings.targetLanguage = nextLanguage;
+    openLanguageMenu();
   }
+});
 
-  const savePromise = window.electronAPI?.saveSettings?.({ targetLanguage: nextLanguage });
-  savePromise?.catch(error => {
-    showToast(
-      `Failed to persist language: ${error instanceof Error ? error.message : String(error)}`
-    );
+languageOptions.forEach(option => {
+  option.addEventListener('click', () => {
+    applyTargetLanguage(option.dataset.language ?? 'c', true);
+    closeLanguageMenu();
   });
+});
+
+document.addEventListener('click', event => {
+  if (!languageDropdown && !languageMenu) {
+    return;
+  }
+  const target = event.target as Node;
+  const clickedDropdown = languageDropdown?.contains(target) ?? false;
+  const clickedMenu = languageMenu?.contains(target) ?? false;
+  if (!clickedDropdown && !clickedMenu) {
+    closeLanguageMenu();
+  }
+});
+
+// Render the language menu at the document level so it always sits above editor layers.
+if (languageMenu && languageMenu.parentElement !== document.body) {
+  document.body.appendChild(languageMenu);
+}
+
+window.addEventListener('resize', () => {
+  if (languageDropdown?.classList.contains('open')) {
+    positionLanguageMenu();
+  }
+});
+
+themeCycleButton?.addEventListener('click', () => {
+  const order: UiTheme[] = ['light', 'dark', 'glass'];
+  const idx = order.indexOf(currentTheme);
+  const nextTheme = order[(idx + 1) % order.length];
+  applyTheme(nextTheme, true);
 });
 
 const pushStatus = (message: string) => {
@@ -1344,16 +1497,14 @@ initSettingsUI({
       typeof uiPrefs.zoomLevel === 'number' ? uiPrefs.zoomLevel : 0,
       false
     );
+    applyTheme(normalizeTheme(uiPrefs.theme), false);
 
     if (autoToggle) {
       ignoreAutoToggleChange = true;
       autoToggle.checked = autoTranslate;
       ignoreAutoToggleChange = false;
     }
-
-    if (languageSelect) {
-      languageSelect.value = settings.targetLanguage;
-    }
+    applyTargetLanguage(settings.targetLanguage, false);
   },
   onError: message => showToast(message),
 }).catch(error => {

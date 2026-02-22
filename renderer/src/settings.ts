@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: EditorSettings = {
     activityVisible: true,
     minimapEnabled: true,
     zoomLevel: 0,
+    theme: 'light',
   },
 };
 
@@ -93,7 +94,11 @@ function wireForm(settings: EditorSettings, options: InitOptions) {
 
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    const next = collectFormSettings(form);
+    const next = {
+      ...settings,
+      ...collectFormSettings(form),
+      ui: settings.ui,
+    };
 
     if (!window.electronAPI?.saveSettings) {
       options.onUpdate(next);
@@ -103,6 +108,7 @@ function wireForm(settings: EditorSettings, options: InitOptions) {
 
     try {
       const saved = await window.electronAPI.saveSettings(next);
+      settings = mergeSettings(settings, saved);
       options.onUpdate(saved);
       modal.classList.remove('visible');
     } catch (error) {

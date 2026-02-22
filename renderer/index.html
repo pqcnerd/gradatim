@@ -7,34 +7,43 @@
   </head>
   <body>
     <div id="app">
+      <div class="bg-canvas" aria-hidden="true"></div>
       <header class="top-bar">
         <span id="workspace-label" class="workspace-label">Gradatim Workspace</span>
         <div class="app-controls">
-          <label class="control">
-            Target
-            <select id="language-select">
-              <option value="c">C</option>
-              <option value="python">Python</option>
-            </select>
-          </label>
-          <label class="control">
+          <div class="control control-language">
+            <span class="control-label">Target</span>
+            <div class="language-dropdown" id="language-dropdown">
+              <button type="button" id="language-trigger" class="language-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <span id="language-trigger-value">C</span>
+                <span class="language-chevron">&#9662;</span>
+              </button>
+              <div class="language-menu" id="language-menu" role="listbox" aria-hidden="true">
+                <button type="button" class="language-option active" data-language="c" role="option" aria-selected="true">
+                  <span class="language-option-check">&#10003;</span>
+                  <span>C</span>
+                </button>
+                <button type="button" class="language-option" data-language="python" role="option" aria-selected="false">
+                  <span class="language-option-check">&#10003;</span>
+                  <span>Python</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <label class="control control-toggle">
             <input type="checkbox" id="auto-toggle" checked />
-            Auto on Enter
+            <span class="toggle-slider" aria-hidden="true"></span>
+            <span class="toggle-label">Auto on Enter</span>
           </label>
-          <button type="button" id="regenerate-btn">Regenerate</button>
-          <button type="button" id="open-settings">Settings</button>
+          <button type="button" id="regenerate-btn" class="btn-regenerate">
+            <span aria-hidden="true">&#8635;</span>
+            <span>Regenerate</span>
+          </button>
+          <button type="button" id="theme-cycle" class="icon-btn" title="Change theme">Theme</button>
+          <button type="button" id="open-settings" class="icon-btn" title="Settings">&#9881;</button>
         </div>
       </header>
       <div class="workspace">
-        <aside class="sidebar">
-          <div class="sidebar-header">
-            <span>Files</span>
-            <button type="button" class="sidebar-action" id="sidebar-refresh" title="Refresh">↻</button>
-          </div>
-          <div id="file-tree" class="file-tree">
-            <p class="tree-placeholder">File tree coming soon…</p>
-          </div>
-        </aside>
         <main class="editor-area">
           <div class="tab-strip">
             <div class="tab-list" id="tab-list"></div>
@@ -44,9 +53,24 @@
             <div id="editor"></div>
           </section>
         </main>
-        <aside class="status-panel">
-          <h2>Line activity</h2>
-          <ul id="status-log"></ul>
+        <aside class="right-panel">
+          <section class="panel-section activity-section">
+            <div class="panel-header">
+              <h2>Line Activity</h2>
+            </div>
+            <div class="status-log-wrap">
+              <ul id="status-log"></ul>
+            </div>
+          </section>
+          <section class="panel-section files-section">
+            <div class="panel-header">
+              <h2>Files</h2>
+              <button type="button" class="sidebar-action" id="sidebar-refresh" title="Refresh">&#8635;</button>
+            </div>
+            <div id="file-tree" class="file-tree">
+              <p class="tree-placeholder">File tree coming soon...</p>
+            </div>
+          </section>
         </aside>
       </div>
       <div id="terminal-panel"></div>

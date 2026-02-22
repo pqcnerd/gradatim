@@ -1,17 +1,19 @@
 /**
  * Terminal Panel Styles
- * 
+ *
  * Note: xterm.css is imported in main.ts
  */
 
-/* Terminal Panel Container */
 .terminal-panel {
   display: flex;
   flex-direction: column;
-  background-color: #1a1b26;
-  border-top: 1px solid #33467c;
+  background: var(--panel-bg);
+  border-top: 1px solid var(--panel-border-soft);
+  border-radius: 12px 12px 0 0;
+  box-shadow: var(--glass-shadow);
   overflow: hidden;
   transition: height 0.1s ease-out;
+  backdrop-filter: blur(18px) saturate(180%);
 }
 
 .terminal-panel.hidden {
@@ -19,20 +21,19 @@
   border-top: none;
 }
 
-/* Panel Header */
 .terminal-panel-header {
   display: flex;
   align-items: center;
-  background-color: #16161e;
+  background: var(--panel-bg-strong);
   height: 36px;
   min-height: 36px;
   padding: 0 8px;
   gap: 8px;
-  border-bottom: 1px solid #33467c;
+  border-bottom: 1px solid var(--panel-border-soft);
   position: relative;
+  backdrop-filter: blur(18px) saturate(180%);
 }
 
-/* Resize Handle */
 .terminal-panel-resize-handle {
   position: absolute;
   top: -4px;
@@ -44,10 +45,9 @@
 }
 
 .terminal-panel-resize-handle:hover {
-  background: linear-gradient(to bottom, transparent, rgba(122, 162, 247, 0.3), transparent);
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--accent) 24%, transparent), transparent);
 }
 
-/* Tabs Container */
 .terminal-tabs {
   display: flex;
   flex: 1;
@@ -55,7 +55,7 @@
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  scrollbar-color: #444b6a #16161e;
+  scrollbar-color: color-mix(in srgb, var(--accent) 42%, transparent) color-mix(in srgb, var(--panel-bg-strong) 85%, transparent);
 }
 
 .terminal-tabs::-webkit-scrollbar {
@@ -63,48 +63,49 @@
 }
 
 .terminal-tabs::-webkit-scrollbar-track {
-  background: #16161e;
+  background: color-mix(in srgb, var(--panel-bg-strong) 88%, transparent);
 }
 
 .terminal-tabs::-webkit-scrollbar-thumb {
-  background: #444b6a;
-  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
-/* Individual Tab */
 .terminal-tab {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 12px;
-  background-color: #1a1b26;
-  border-radius: 4px 4px 0 0;
+  background: color-mix(in srgb, var(--panel-bg-strong) 72%, transparent);
+  border: 1px solid var(--panel-border-soft);
+  border-top: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
   cursor: pointer;
-  color: #787c99;
+  color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
-  transition: background-color 0.15s, color 0.15s;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .terminal-tab:hover {
-  background-color: #24283b;
-  color: #a9b1d6;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-main);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .terminal-tab.active {
-  background-color: #1a1b26;
-  color: #c0caf5;
-  border-bottom: 2px solid #7aa2f7;
+  background: color-mix(in srgb, var(--panel-bg-strong) 94%, transparent);
+  color: var(--text-main);
+  border-top-color: var(--accent);
 }
 
 .terminal-tab.exited {
-  color: #f7768e;
+  color: var(--danger);
 }
 
 .terminal-tab.exited::before {
   content: '●';
   margin-right: 4px;
-  color: #f7768e;
+  color: var(--danger);
 }
 
 .terminal-tab-name {
@@ -121,13 +122,12 @@
   height: 16px;
   padding: 0;
   background: none;
-  border: none;
-  border-radius: 3px;
-  color: #787c99;
+  border: 1px solid transparent;
+  color: var(--text-muted);
   font-size: 14px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, background-color 0.15s, color 0.15s;
+  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .terminal-tab:hover .terminal-tab-close,
@@ -136,11 +136,12 @@
 }
 
 .terminal-tab-close:hover {
-  background-color: #f7768e;
-  color: #1a1b26;
+  background-color: color-mix(in srgb, var(--danger) 16%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+  border-radius: 6px;
 }
 
-/* Panel Actions */
 .terminal-panel-actions {
   display: flex;
   gap: 4px;
@@ -153,61 +154,54 @@
   width: 28px;
   height: 28px;
   padding: 0;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: #787c99;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid var(--panel-border-soft);
+  color: var(--text-main);
+  border-radius: 8px;
   font-size: 14px;
   cursor: pointer;
   transition: background-color 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .terminal-btn:hover {
-  background-color: #24283b;
-  color: #c0caf5;
-  border-color: #33467c;
+  background-color: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text-main);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  transform: translateY(-1px);
 }
 
 .terminal-btn-new {
   font-size: 18px;
-  font-weight: bold;
+  font-weight: 700;
 }
 
 .terminal-btn-toggle {
   font-size: 10px;
 }
 
-/* Panel Content */
 .terminal-panel-content {
   flex: 1;
   position: relative;
   overflow: hidden;
 }
 
-/* Terminal Instances Container */
 .terminal-instances {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
 }
 
-/* Individual Terminal Instance */
 .terminal-instance {
   display: none;
   width: 100%;
   height: 100%;
   padding: 8px;
-  box-sizing: border-box;
 }
 
-.terminal-instance[style*="display: block"],
+.terminal-instance[style*='display: block'],
 .terminal-instance:only-child {
   display: block;
 }
 
-/* xterm.js overrides */
 .terminal-instance .xterm {
   height: 100%;
   padding: 0;
@@ -222,20 +216,17 @@
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-track {
-  background: #1a1b26;
+  background: color-mix(in srgb, var(--panel-bg-strong) 88%, transparent);
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-thumb {
-  background: #444b6a;
-  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .terminal-instance .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: #565f89;
+  background: color-mix(in srgb, var(--accent) 56%, transparent);
 }
 
-/* Ensure terminal fills container */
 .terminal-instance .xterm-screen {
   height: 100%;
 }
-

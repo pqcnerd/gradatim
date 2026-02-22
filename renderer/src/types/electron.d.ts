@@ -34,6 +34,7 @@ export interface EditorSettings {
     activityVisible?: boolean;
     minimapEnabled?: boolean;
     zoomLevel?: number;
+    theme?: 'light' | 'dark' | 'glass';
   };
 }
 
