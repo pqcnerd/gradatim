@@ -7,18 +7,22 @@ files:
   - electron/main.js
   - electron/preload.js
   - electron/config-store.js
+  - electron/pty-manager.js
   - renderer/dist/**
 asar: false
 extraMetadata:
   main: electron/main.js
 win:
+  icon: build/icon.png
   target:
     - target: nsis
       arch:
         - x64
 mac:
+  icon: build/icon.png
   target: dmg
 linux:
+  icon: build/icon.png
   target:
     - AppImage
     - deb
