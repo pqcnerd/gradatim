@@ -13,7 +13,7 @@ extraMetadata:
   main: electron/main.js
 win:
   target:
-    - target: dir
+    - target: nsis
       arch:
         - x64
 mac:
@@ -21,4 +21,5 @@ mac:
 linux:
   target:
     - AppImage
+    - deb
 
